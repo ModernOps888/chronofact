@@ -25,12 +25,20 @@ impl ContentSanitizer {
             // Direct & Indirect Prompt Injection triggers
             Regex::new(r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)").unwrap(),
             Regex::new(r"(?i)system\s+override").unwrap(),
-            Regex::new(r"(?i)disregard\s+(your\s+)?(safety|instructions|guidelines)").unwrap(),
-            Regex::new(r"(?i)you\s+are\s+now\s+(in\s+developer\s+mode|unrestricted|DAN|jailbroken)").unwrap(),
+            Regex::new(r"(?i)disregard\s+(your\s+)?(safety|instructions|guidelines|previous)").unwrap(),
+            Regex::new(r"(?i)you\s+are\s+now\s+(in\s+developer\s+mode|in\s+debug\s+mode|unrestricted|DAN|jailbroken|free\s+of\s+constraints)").unwrap(),
             Regex::new(r"(?i)<\|(im_start|im_end|system|user|assistant)\|?>").unwrap(),
             Regex::new(r"(?i)print\s+(the\s+)?(system\s+prompt|initial\s+instructions)").unwrap(),
-            Regex::new(r"(?i)bypass\s+all\s+(filters|restrictions)").unwrap(),
+            Regex::new(r"(?i)bypass\s+all\s+(filters|restrictions|temporal\s+checks)").unwrap(),
+            Regex::new(r"(?i)override\s+all\s+(filters|rules|safeguards)").unwrap(),
             Regex::new(r"(?i)markdown\s+injection").unwrap(),
+            Regex::new(r"(?i)<\s*/?(script|iframe|context|prompt)[^>]*>").unwrap(),
+            Regex::new(r"(?i)\[\s*system(\s+instruction)?\s*\]").unwrap(),
+            Regex::new(r"(?i)(assistant|human):\s*(you\s+are|</context>)").unwrap(),
+            Regex::new(r"(?i)rm\s+-rf|/etc/passwd").unwrap(),
+            Regex::new(r"(?i)reveal\s+(administrative|credentials|secrets)|dump\s+(internal|database)\s+schemas").unwrap(),
+            Regex::new(r"(?i)stop!\s+ignore").unwrap(),
+            Regex::new(r"(?i)root\s+access").unwrap(),
         ];
 
         Self {

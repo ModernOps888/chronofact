@@ -33,6 +33,7 @@ pub struct AppState {
     pub tool_router: Arc<TfidfToolRouter>,
     pub tool_cache: Arc<ToolResponseCache>,
     pub cost_tracker: Arc<CostTracker>,
+    pub gateway: Option<Arc<tokio::sync::RwLock<crate::gateway::GatewayMultiplexer>>>,
 }
 
 pub async fn health_check() -> impl IntoResponse {
@@ -60,6 +61,47 @@ pub async fn check_temporal(
     let scan = state.temporal_scanner.scan(&payload.query);
     let today = chrono::Utc::now().naive_utc().date();
     let analysis = HorizonCalculator::evaluate(&model, &scan, today);
+
+    let intervention_type = if analysis.is_model_outdated_or_retired {
+        "OUTDATED_MODEL_INTERCEPTED"
+    } else if !analysis.outdated_warnings.is_empty() {
+        "CONTRADICTION_FLAGGED"
+    } else if analysis.requires_grounding {
+        "MANDATORY_CALIBRATION_INTERCEPTION"
+    } else {
+        "TEMPORAL_MONITOR"
+    };
+
+    let outdated_topics = if !analysis.outdated_warnings.is_empty() {
+        analysis.outdated_warnings.join(" | ")
+    } else if !scan.detected_entities.is_empty() {
+        format!("{}: {}", scan.detected_entities.join(", "), scan.temporal_keywords.join(", "))
+    } else {
+        "Knowledge cutoff calibration scan".to_string()
+    };
+
+    let ground_truth = if let Some(ref repl) = analysis.recommended_replacement {
+        format!("Flagged model '{}' replaced by active standard: {}", model.display_name, repl)
+    } else {
+        format!(
+            "Model {} cutoff {} (Freeze {}). Pre-release freeze lag: {} days. Grounding mandatory: {}",
+            model.display_name, model.official_knowledge_cutoff, model.estimated_training_freeze, analysis.days_post_freeze, analysis.requires_grounding
+        )
+    };
+
+    let drift_event = crate::memory::DriftEvent {
+        id: 0,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        project_id: "antigravity-ide".to_string(),
+        model_id: model.model_id.clone(),
+        query: payload.query.clone(),
+        days_post_freeze: analysis.days_post_freeze,
+        temporal_risk_score: analysis.temporal_risk_score,
+        outdated_topics_caught: outdated_topics,
+        intervention_type: intervention_type.to_string(),
+        ground_truth_retrieved: ground_truth,
+    };
+    let _ = state.memory.record_drift_event(&drift_event);
 
     (StatusCode::OK, Json(analysis))
 }
@@ -326,3 +368,113 @@ pub async fn route_tools(
     let _ = state.memory.record_cost_event(&payload.query, result.pruned_tools, result.tokens_saved, cost_usd);
     (StatusCode::OK, Json(result))
 }
+
+#[derive(Debug, Deserialize)]
+pub struct GatewayCallRequest {
+    pub name: String,
+    pub arguments: Option<serde_json::Value>,
+    pub verify_output: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GatewayRegisterRequest {
+    pub name: String,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub url: Option<String>,
+}
+
+pub async fn list_gateway_servers(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if let Some(ref gw) = state.gateway {
+        let gw_guard = gw.read().await;
+        (StatusCode::OK, Json(json!(gw_guard.get_server_statuses())))
+    } else {
+        (StatusCode::OK, Json(json!([])))
+    }
+}
+
+pub async fn list_gateway_tools(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if let Some(ref gw) = state.gateway {
+        let gw_guard = gw.read().await;
+        (StatusCode::OK, Json(json!(gw_guard.get_all_tools())))
+    } else {
+        (StatusCode::OK, Json(json!([])))
+    }
+}
+
+pub async fn call_gateway_tool(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<GatewayCallRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let gw = state.gateway.as_ref().ok_or((StatusCode::SERVICE_UNAVAILABLE, "Gateway subsystem not active".to_string()))?;
+
+    let args_val = payload.arguments.clone().unwrap_or(json!({}));
+    let (threat, threats) = state.sanitizer.inspect_user_query(&args_val.to_string());
+    if threat {
+        return Err((StatusCode::BAD_REQUEST, format!("Security shield rejected parameters: {:?}", threats)));
+    }
+
+    if let Some(cached) = state.tool_cache.get(&payload.name, &args_val) {
+        return Ok((StatusCode::OK, Json(json!({
+            "result": cached,
+            "cache_hit": true,
+            "verified": true
+        }))));
+    }
+
+    let gw_guard = gw.read().await;
+    let result = gw_guard.call_tool(&payload.name, Some(args_val.clone())).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    drop(gw_guard);
+
+    let should_verify = payload.verify_output.unwrap_or(true);
+    let verification = if should_verify {
+        let claims = state.claim_extractor.extract_claims(&result.to_string());
+        if !claims.is_empty() {
+            Some(state.fact_verifier.verify_claims(&claims, &[]))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    state.tool_cache.put(&payload.name, &args_val, result.clone());
+
+    Ok((StatusCode::OK, Json(json!({
+        "result": result,
+        "cache_hit": false,
+        "verification": verification
+    }))))
+}
+
+pub async fn register_gateway_server(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<GatewayRegisterRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let gw = state.gateway.as_ref().ok_or((StatusCode::SERVICE_UNAVAILABLE, "Gateway subsystem not active".to_string()))?;
+
+    let config = crate::gateway::UpstreamServerConfig {
+        name: payload.name.clone(),
+        command: payload.command,
+        args: payload.args.unwrap_or_default(),
+        env: std::collections::HashMap::new(),
+        url: payload.url,
+        enabled: true,
+        handshake_timeout_secs: Some(15),
+        request_timeout_secs: Some(30),
+    };
+
+    let mut gw_guard = gw.write().await;
+    gw_guard.register_and_connect(config).await;
+
+    Ok((StatusCode::OK, Json(json!({
+        "status": "registered",
+        "server": payload.name
+    }))))
+}
+

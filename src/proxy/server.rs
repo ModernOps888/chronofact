@@ -37,6 +37,9 @@ impl ApiServer {
             .route("/api/security/audit", get(get_security_audit))
             .route("/api/cost/metrics", get(get_cost_metrics))
             .route("/api/cost/route", post(route_tools))
+            .route("/api/gateway/servers", get(list_gateway_servers).post(register_gateway_server))
+            .route("/api/gateway/tools", get(list_gateway_tools))
+            .route("/api/gateway/call", post(call_gateway_tool))
             .layer(cors)
             .with_state(self.state.clone())
     }

@@ -153,6 +153,81 @@ pub fn list_tools() -> Value {
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "gateway_find_tools",
+                "description": "Searches across all connected upstream MCP servers and native tools using TF-IDF semantic relevance. Returns matched tools with full schemas, slashing prompt token bloat by 80%+.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language description of what you want to accomplish"
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of tools to return (default: 5)"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "gateway_call_tool",
+                "description": "Executes a tool on a multiplexed upstream MCP server with inbound security sanitization, idempotent caching, and outbound anti-hallucination verification.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Exact name or fully-qualified name (server/tool) of the upstream tool"
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": "Arguments to pass to the tool matching its inputSchema"
+                        },
+                        "verify_output": {
+                            "type": "boolean",
+                            "description": "Whether to perform NLI anti-hallucination claim audit on tool output (default: true)"
+                        }
+                    },
+                    "required": ["name"]
+                }
+            },
+            {
+                "name": "gateway_list_servers",
+                "description": "Lists all connected upstream MCP servers, transport types (stdio/HTTP), tool counts, and connection health.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "gateway_register_server",
+                "description": "Dynamically registers and connects a new upstream MCP server (stdio child process or HTTP URL) at runtime without restarting the daemon.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Unique identifier for the upstream server"
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "Executable path for stdio servers (e.g. 'node', 'python', 'docker')"
+                        },
+                        "args": {
+                            "type": "array",
+                            "description": "Command line arguments",
+                            "items": { "type": "string" }
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "URL for HTTP/SSE servers"
+                        }
+                    },
+                    "required": ["name"]
+                }
             }
         ]
     })

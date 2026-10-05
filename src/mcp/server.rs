@@ -1,13 +1,16 @@
 use super::protocol::{JsonRpcRequest, JsonRpcResponse};
 use super::tools;
+use crate::cost::{CostTracker, TfidfToolRouter, ToolCandidate, ToolResponseCache};
+use crate::gateway::GatewayMultiplexer;
 use crate::grounding::{ClaimExtractor, FactVerifier};
 use crate::memory::{DriftEvent, MemoryEngine, ProjectEntity};
 use crate::research::SearchEngine;
+use crate::security::ContentSanitizer;
 use crate::temporal::{HorizonCalculator, ModelRegistry, TemporalScanner};
 use serde_json::{json, Value};
-use crate::cost::{CostTracker, TfidfToolRouter, ToolCandidate, ToolResponseCache};
 use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::RwLock;
 
 pub struct McpServer {
     model_registry: Arc<ModelRegistry>,
@@ -19,10 +22,19 @@ pub struct McpServer {
     tool_router: Arc<TfidfToolRouter>,
     tool_cache: Arc<ToolResponseCache>,
     cost_tracker: Arc<CostTracker>,
+    sanitizer: Arc<ContentSanitizer>,
+    gateway: Option<Arc<RwLock<GatewayMultiplexer>>>,
 }
 
 impl McpServer {
     pub fn new(memory: Arc<MemoryEngine>) -> Self {
+        Self::with_gateway(memory, None)
+    }
+
+    pub fn with_gateway(
+        memory: Arc<MemoryEngine>,
+        gateway: Option<Arc<RwLock<GatewayMultiplexer>>>,
+    ) -> Self {
         Self {
             model_registry: Arc::new(ModelRegistry::new()),
             scanner: Arc::new(TemporalScanner::new()),
@@ -33,6 +45,8 @@ impl McpServer {
             tool_router: Arc::new(TfidfToolRouter::default()),
             tool_cache: Arc::new(ToolResponseCache::default()),
             cost_tracker: Arc::new(CostTracker::default()),
+            sanitizer: Arc::new(ContentSanitizer::new()),
+            gateway,
         }
     }
 
@@ -40,16 +54,23 @@ impl McpServer {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin);
         let mut stdout = tokio::io::stdout();
-        let mut line = String::new();
+        let mut buf = Vec::new();
 
         loop {
-            line.clear();
-            let bytes_read = reader.read_line(&mut line).await?;
+            buf.clear();
+            let bytes_read = match reader.read_until(b'\n', &mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("ChronoFact stdio read error: {}", e);
+                    break;
+                }
+            };
             if bytes_read == 0 {
                 break;
             }
 
-            let trimmed = line.trim();
+            let text = String::from_utf8_lossy(&buf);
+            let trimmed = text.trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -59,8 +80,8 @@ impl McpServer {
                 Err(e) => {
                     let err_resp = JsonRpcResponse::error(None, -32700, &format!("Parse error: {}", e));
                     let out = serde_json::to_string(&err_resp).unwrap();
-                    stdout.write_all(format!("{}\n", out).as_bytes()).await?;
-                    stdout.flush().await?;
+                    let _ = stdout.write_all(format!("{}\n", out).as_bytes()).await;
+                    let _ = stdout.flush().await;
                     continue;
                 }
             };
@@ -68,8 +89,8 @@ impl McpServer {
             let resp = self.handle_request(req).await;
             if let Some(r) = resp {
                 let out = serde_json::to_string(&r).unwrap();
-                stdout.write_all(format!("{}\n", out).as_bytes()).await?;
-                stdout.flush().await?;
+                let _ = stdout.write_all(format!("{}\n", out).as_bytes()).await;
+                let _ = stdout.flush().await;
             }
         }
 
@@ -95,7 +116,23 @@ impl McpServer {
             "notifications/initialized" => None,
             "ping" => Some(JsonRpcResponse::success(id, json!({}))),
             "tools/list" => {
-                let tools_data = tools::list_tools();
+                let mut tools_data = tools::list_tools();
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    let upstream = gw_guard.get_all_tools();
+                    if let Some(arr) = tools_data.get_mut("tools").and_then(|v| v.as_array_mut()) {
+                        for ut in upstream {
+                            let schema = ut.definition.input_schema.unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+                            arr.push(json!({
+                                "name": ut.definition.name,
+                                "description": ut.definition.description.unwrap_or_else(|| format!("Upstream tool on server '{}'", ut.server_name)),
+                                "inputSchema": schema,
+                                "server": ut.server_name,
+                                "fqn": ut.fqn
+                            }));
+                        }
+                    }
+                }
                 Some(JsonRpcResponse::success(id, tools_data))
             }
             "tools/call" => {
@@ -435,7 +472,144 @@ impl McpServer {
                 let metrics = self.cost_tracker.get_metrics_with_db(db_totals, hits, misses, entries);
                 Ok(json!(metrics))
             }
-            other => Err(format!("Unknown tool: {}", other)),
+            "gateway_find_tools" => {
+                let query = args.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
+                let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+
+                let mut all_candidates = vec![
+                    ToolCandidate::new("chronofact_temporal_check", "Examines a query against a model's knowledge cutoff and estimated training freeze date", "chronofact", vec!["model_id".into(), "query".into()]),
+                    ToolCandidate::new("chronofact_ground_query", "Performs real-time web retrieval, validates URLs against SSRF, and sanitizes untrusted content", "chronofact", vec!["query".into(), "max_results".into()]),
+                    ToolCandidate::new("chronofact_verify_claims", "Decomposes a text response into atomic propositions and checks each against retrieved source evidence", "chronofact", vec!["response_text".into(), "sources".into()]),
+                    ToolCandidate::new("chronofact_memory_save", "Persists an architectural invariant, tech stack version, or project rule into L3 semantic memory", "chronofact", vec!["project_id".into(), "entity_name".into(), "definition".into()]),
+                    ToolCandidate::new("chronofact_memory_dossier", "Retrieves the persistent Project Truth Dossier with Zero-Pollution Guard", "chronofact", vec!["project_id".into(), "query".into()]),
+                    ToolCandidate::new("chronofact_cost_optimize", "Filters available tools to top-k relevant tools using TF-IDF routing to save tokens", "chronofact", vec!["query".into(), "top_k".into()]),
+                    ToolCandidate::new("gateway_find_tools", "Search across all upstream servers and native tools via TF-IDF", "chronofact-gateway", vec!["query".into(), "top_k".into()]),
+                    ToolCandidate::new("gateway_call_tool", "Execute tool on multiplexed upstream server with security and anti-hallucination verification", "chronofact-gateway", vec!["name".into(), "arguments".into()]),
+                    ToolCandidate::new("gateway_list_servers", "Lists all connected upstream MCP servers and health", "chronofact-gateway", vec![]),
+                ];
+
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    all_candidates.extend(gw_guard.to_tool_candidates());
+                }
+
+                let routing = self.tool_router.route(query, &all_candidates, top_k, None);
+                self.cost_tracker.record_savings(routing.pruned_tools, routing.tokens_saved);
+
+                Ok(json!({
+                    "query": query,
+                    "matched_tools": routing.selected_tools,
+                    "pruned_count": routing.pruned_tools,
+                    "tokens_saved": routing.tokens_saved,
+                    "savings_percentage": routing.savings_percentage
+                }))
+            }
+            "gateway_list_servers" => {
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    Ok(json!(gw_guard.get_server_statuses()))
+                } else {
+                    Ok(json!([]))
+                }
+            }
+            "gateway_register_server" => {
+                let name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing name")?;
+                let command = args.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let args_list = args.get("args").and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                let url = args.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                if let Some(ref gw) = self.gateway {
+                    let config = crate::gateway::UpstreamServerConfig {
+                        name: name.to_string(),
+                        command,
+                        args: args_list,
+                        env: std::collections::HashMap::new(),
+                        url,
+                        enabled: true,
+                        handshake_timeout_secs: Some(15),
+                        request_timeout_secs: Some(30),
+                    };
+                    let mut gw_guard = gw.write().await;
+                    gw_guard.register_and_connect(config).await;
+                    Ok(json!({ "status": "registered", "server": name }))
+                } else {
+                    Err("Gateway subsystem not initialized".to_string())
+                }
+            }
+            "gateway_call_tool" => {
+                let tool_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing name")?;
+                let tool_args = args.get("arguments").cloned().unwrap_or(json!({}));
+                let verify_output = args.get("verify_output").and_then(|v| v.as_bool()).unwrap_or(true);
+
+                self.dispatch_upstream_tool(tool_name, &tool_args, verify_output).await
+            }
+            other => {
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    if gw_guard.find_tool_server(other).is_some() {
+                        drop(gw_guard);
+                        return self.dispatch_upstream_tool(other, args, true).await;
+                    }
+                }
+                Err(format!("Unknown tool: {}", other))
+            }
         }
     }
+
+    pub async fn dispatch_upstream_tool(
+        &self,
+        name: &str,
+        args: &Value,
+        verify_output: bool,
+    ) -> Result<Value, String> {
+        let gw = self.gateway.as_ref().ok_or("Gateway subsystem not initialized")?;
+
+        // 1. Inbound Security Sanitization
+        let args_str = args.to_string();
+        let (has_threats, threats) = self.sanitizer.inspect_user_query(&args_str);
+        if has_threats {
+            return Err(format!("Security shield blocked dangerous tool call argument: {:?}", threats));
+        }
+
+        // 2. Idempotent Tool Cache Check
+        if let Some(cached) = self.tool_cache.get(name, args) {
+            return Ok(json!({
+                "result": cached,
+                "cache_hit": true,
+                "verified": true
+            }));
+        }
+
+        // 3. Dispatch to Upstream Server
+        let gw_guard = gw.read().await;
+        let upstream_result = gw_guard.call_tool(name, Some(args.clone())).await
+            .map_err(|e| format!("Upstream tool execution error: {}", e))?;
+        drop(gw_guard);
+
+        // 4. Outbound Cognitive Epistemic Verification (NLI Anti-Hallucination)
+        let verification_info = if verify_output {
+            let result_str = upstream_result.to_string();
+            let claims = self.extractor.extract_claims(&result_str);
+            if !claims.is_empty() {
+                let report = self.verifier.verify_claims(&claims, &[]);
+                Some(report)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 5. Cache result & log telemetry
+        self.tool_cache.put(name, args, upstream_result.clone());
+
+        Ok(json!({
+            "result": upstream_result,
+            "cache_hit": false,
+            "verification": verification_info
+        }))
+    }
 }
+
