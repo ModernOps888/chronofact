@@ -21,7 +21,8 @@ if (-not (Test-Path $binPath)) {
 $port3030 = Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction SilentlyContinue
 if (-not $port3030) {
     Write-Host "`n[1/2] Launching Rust Epistemic Engine on http://127.0.0.1:3030 ..." -ForegroundColor Green
-    $backendProcess = Start-Process -FilePath "c:\chronofact\bin\chronofact.exe" -ArgumentList "serve", "--port", "3030" -PassThru -WindowStyle Minimized
+    Start-Process -FilePath "c:\chronofact\bin\chronofact.exe" -ArgumentList "serve", "--port", "3030" -WindowStyle Minimized
+    Start-Sleep -Seconds 1
 } else {
     Write-Host "`n[1/2] Rust Epistemic Engine already listening on http://127.0.0.1:3030" -ForegroundColor Green
 }
@@ -30,7 +31,7 @@ if (-not $port3030) {
 $port5173 = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue
 if (-not $port5173) {
     Write-Host "[2/2] Launching React / TypeScript Cockpit on http://localhost:5173 ..." -ForegroundColor Green
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/c cd /d c:\chronofact\frontend && npm run dev" -WindowStyle Minimized
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile", "-Command", "Set-Location 'c:\chronofact\frontend'; npm run dev" -WindowStyle Minimized
     Start-Sleep -Seconds 2
 } else {
     Write-Host "[2/2] React / TypeScript Cockpit already active on http://localhost:5173" -ForegroundColor Green
