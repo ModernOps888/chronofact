@@ -20,7 +20,13 @@ impl Config {
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(3030);
 
-        let db_path = env::var("CHRONOFACT_DB").unwrap_or_else(|_| "chronofact_memory.db".to_string());
+        let db_path = env::var("CHRONOFACT_DB").unwrap_or_else(|_| {
+            if std::path::Path::new("C:\\chronofact").exists() {
+                "C:\\chronofact\\chronofact_memory.db".to_string()
+            } else {
+                "chronofact_memory.db".to_string()
+            }
+        });
 
         let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
 

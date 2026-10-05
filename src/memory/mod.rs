@@ -92,4 +92,20 @@ impl MemoryEngine {
         let conn = self.conn.lock().unwrap();
         EpisodicLedger::get_recent_drift_events(&conn, limit)
     }
+
+    pub fn record_cost_event(
+        &self,
+        query: &str,
+        pruned_tools: usize,
+        tokens_saved: usize,
+        cost_saved_usd: f64,
+    ) -> Result<i64, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        EpisodicLedger::record_cost_event(&conn, query, pruned_tools, tokens_saved, cost_saved_usd)
+    }
+
+    pub fn get_cost_totals(&self) -> Result<(u64, u64, u64, f64), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        EpisodicLedger::get_cost_totals(&conn)
+    }
 }

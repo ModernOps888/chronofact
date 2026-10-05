@@ -414,6 +414,8 @@ impl McpServer {
 
                 let routing = self.tool_router.route(query, &default_tools, top_k, None);
                 self.cost_tracker.record_savings(routing.pruned_tools, routing.tokens_saved);
+                let cost_usd = (routing.tokens_saved as f64 * 0.000003 * 10000.0).round() / 10000.0;
+                let _ = self.memory.record_cost_event(query, routing.pruned_tools, routing.tokens_saved, cost_usd);
 
                 let cache_prefix = CostTracker::generate_cache_aligned_prefix("antigravity-ide");
 
@@ -429,7 +431,8 @@ impl McpServer {
             }
             "chronofact_cost_metrics" => {
                 let (hits, misses, entries, _hit_rate) = self.tool_cache.stats();
-                let metrics = self.cost_tracker.get_metrics(hits, misses, entries);
+                let db_totals = self.memory.get_cost_totals().unwrap_or((0, 0, 0, 0.0));
+                let metrics = self.cost_tracker.get_metrics_with_db(db_totals, hits, misses, entries);
                 Ok(json!(metrics))
             }
             other => Err(format!("Unknown tool: {}", other)),

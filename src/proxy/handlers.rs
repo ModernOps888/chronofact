@@ -294,7 +294,8 @@ pub async fn get_cost_metrics(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let (hits, misses, entries, _hit_rate) = state.tool_cache.stats();
-    let metrics = state.cost_tracker.get_metrics(hits, misses, entries);
+    let db_totals = state.memory.get_cost_totals().unwrap_or((0, 0, 0, 0.0));
+    let metrics = state.cost_tracker.get_metrics_with_db(db_totals, hits, misses, entries);
     (StatusCode::OK, Json(metrics))
 }
 
@@ -321,5 +322,7 @@ pub async fn route_tools(
 
     let result = state.tool_router.route(&payload.query, &tools, top_k, None);
     state.cost_tracker.record_savings(result.pruned_tools, result.tokens_saved);
+    let cost_usd = (result.tokens_saved as f64 * 0.000003 * 10000.0).round() / 10000.0;
+    let _ = state.memory.record_cost_event(&payload.query, result.pruned_tools, result.tokens_saved, cost_usd);
     (StatusCode::OK, Json(result))
 }

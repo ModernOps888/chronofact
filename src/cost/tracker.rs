@@ -52,9 +52,24 @@ impl CostTracker {
     }
 
     pub fn get_metrics(&self, cache_hits: u64, cache_misses: u64, active_cache_entries: usize) -> CostMetricsSummary {
-        let queries = self.total_queries.read().map(|q| *q).unwrap_or(0);
-        let pruned = self.total_pruned_tools.read().map(|p| *p).unwrap_or(0);
-        let saved_tokens = self.total_tokens_saved.read().map(|s| *s).unwrap_or(0);
+        self.get_metrics_with_db((0, 0, 0, 0.0), cache_hits, cache_misses, active_cache_entries)
+    }
+
+    pub fn get_metrics_with_db(
+        &self,
+        db_totals: (u64, u64, u64, f64),
+        cache_hits: u64,
+        cache_misses: u64,
+        active_cache_entries: usize,
+    ) -> CostMetricsSummary {
+        let (db_queries, db_pruned, db_saved_tokens, db_usd) = db_totals;
+        let mem_queries = self.total_queries.read().map(|q| *q).unwrap_or(0);
+        let mem_pruned = self.total_pruned_tools.read().map(|p| *p).unwrap_or(0);
+        let mem_saved = self.total_tokens_saved.read().map(|s| *s).unwrap_or(0);
+
+        let queries = db_queries.max(mem_queries);
+        let pruned = db_pruned.max(mem_pruned);
+        let saved_tokens = db_saved_tokens.max(mem_saved);
 
         let total_cache_attempts = cache_hits + cache_misses;
         let cache_hit_rate = if total_cache_attempts > 0 {
@@ -69,7 +84,11 @@ impl CostTracker {
             0.0
         };
 
-        let usd_saved = (saved_tokens as f64 * self.input_price_per_token * 100.0).round() / 100.0;
+        let usd_saved = if db_usd > 0.0 {
+            (db_usd * 10000.0).round() / 10000.0
+        } else {
+            (saved_tokens as f64 * self.input_price_per_token * 10000.0).round() / 10000.0
+        };
 
         CostMetricsSummary {
             total_queries_optimized: queries,

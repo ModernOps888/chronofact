@@ -76,6 +76,18 @@ impl EpisodicLedger {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cost_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                query TEXT NOT NULL,
+                pruned_tools INTEGER NOT NULL,
+                tokens_saved INTEGER NOT NULL,
+                cost_saved_usd REAL NOT NULL
+            );",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -180,5 +192,37 @@ impl EpisodicLedger {
             events.push(r?);
         }
         Ok(events)
+    }
+
+    pub fn record_cost_event(
+        conn: &Connection,
+        query: &str,
+        pruned_tools: usize,
+        tokens_saved: usize,
+        cost_saved_usd: f64,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO cost_events (timestamp, query, pruned_tools, tokens_saved, cost_saved_usd)
+             VALUES (?1, ?2, ?3, ?4, ?5);",
+            params![now, query, pruned_tools as i64, tokens_saved as i64, cost_saved_usd],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_cost_totals(conn: &Connection) -> Result<(u64, u64, u64, f64)> {
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*), COALESCE(SUM(pruned_tools), 0), COALESCE(SUM(tokens_saved), 0), COALESCE(SUM(cost_saved_usd), 0.0) FROM cost_events;"
+        )?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            let count: i64 = row.get(0)?;
+            let pruned: i64 = row.get(1)?;
+            let tokens: i64 = row.get(2)?;
+            let cost: f64 = row.get(3)?;
+            Ok((count as u64, pruned as u64, tokens as u64, cost))
+        } else {
+            Ok((0, 0, 0, 0.0))
+        }
     }
 }
