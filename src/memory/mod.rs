@@ -37,8 +37,12 @@ impl MemoryEngine {
         })
     }
 
+    fn get_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn record_session(&self, session: &SessionSummary) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         EpisodicLedger::record_session(&conn, session)
     }
 
@@ -49,47 +53,47 @@ impl MemoryEngine {
         description: &str,
         diff: Option<&str>,
     ) -> Result<i64, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         EpisodicLedger::record_event(&conn, session_id, event_type, description, diff)
     }
 
     pub fn upsert_entity(&self, entity: &ProjectEntity) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         SemanticEntityGraph::upsert_entity(&conn, entity)
     }
 
     pub fn link_entities(&self, source_id: &str, target_id: &str, relation: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         SemanticEntityGraph::link_entities(&conn, source_id, target_id, relation)
     }
 
     pub fn query_entities(&self, project_id: &str, query: &str) -> Result<Vec<ProjectEntity>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         SemanticEntityGraph::query_entities_by_text(&conn, project_id, query)
     }
 
     pub fn get_project_graph(&self, project_id: &str) -> Result<ProjectGraphView, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         SemanticEntityGraph::get_project_graph(&conn, project_id)
     }
 
     pub fn get_dossier(&self, project_id: &str) -> Result<ProjectDossier, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         DossierCompiler::compile(&conn, project_id, None)
     }
 
     pub fn get_relevant_dossier(&self, project_id: &str, query: &str) -> Result<ProjectDossier, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         DossierCompiler::compile(&conn, project_id, Some(query))
     }
 
     pub fn record_drift_event(&self, event: &DriftEvent) -> Result<i64, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         EpisodicLedger::record_drift_event(&conn, event)
     }
 
     pub fn get_drift_events(&self, limit: usize) -> Result<Vec<DriftEvent>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         EpisodicLedger::get_recent_drift_events(&conn, limit)
     }
 
@@ -100,12 +104,12 @@ impl MemoryEngine {
         tokens_saved: usize,
         cost_saved_usd: f64,
     ) -> Result<i64, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         EpisodicLedger::record_cost_event(&conn, query, pruned_tools, tokens_saved, cost_saved_usd)
     }
 
     pub fn get_cost_totals(&self) -> Result<(u64, u64, u64, f64), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn();
         EpisodicLedger::get_cost_totals(&conn)
     }
 }

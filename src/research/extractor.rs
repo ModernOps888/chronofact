@@ -21,6 +21,9 @@ impl ContentExtractor {
     }
 
     pub fn chunk_text(text: &str, max_words: usize) -> Vec<String> {
+        if max_words == 0 {
+            return Vec::new();
+        }
         let words: Vec<&str> = text.split_whitespace().collect();
         if words.is_empty() {
             return Vec::new();

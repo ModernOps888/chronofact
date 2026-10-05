@@ -2,7 +2,7 @@
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 29/29 Passed](https://github.com/ModernOps888/chronofact/actions/workflows/ci.yml/badge.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 30/30 Passed](https://github.com/ModernOps888/chronofact/actions/workflows/ci.yml/badge.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 
@@ -179,7 +179,7 @@ The frontend is a dark-mode, obsidian and imperial gold telemetry dashboard buil
 
 | Metric / Benchmark | Result | Verification Proof |
 |:---|:---:|:---|
-| **Rust Unit & Integration Tests** | **29 / 29 PASSING** | `cargo test` (7 test suites, 0 warnings, 0 failures) |
+| **Rust Unit & Integration Tests** | **30 / 30 PASSING** | `cargo test` (7 test suites, 0 warnings, 0 failures) |
 | **CI Automation** | **GitHub Actions** | Automated build & test on push/PR (`.github/workflows/ci.yml`) |
 | **Gateway Multiplexing Throughput** | **1,333,333 ops/sec** | P50: 300ns (Verified in `stress_test_scenario_1`) |
 | **TF-IDF Schema Pruning Ratio (50 Tools)** | **92.0% Token Reduction** | 9,000 tokens pruned to 720 tokens (46 tools pruned) |

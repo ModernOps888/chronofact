@@ -19,6 +19,12 @@ fn test_ssrf_firewall_blocks_private_and_metadata_ips() {
     assert!(SecurityValidator::validate_outbound_url("file:///etc/passwd").is_err());
     assert!(SecurityValidator::validate_outbound_url("gopher://127.0.0.1").is_err());
 
+    // IPv6 loopback, IPv4-mapped IPv6, and Unique Local RFC 4193
+    assert!(SecurityValidator::validate_outbound_url("http://[::1]:8080/").is_err());
+    assert!(SecurityValidator::validate_outbound_url("http://[::ffff:127.0.0.1]:80/").is_err());
+    assert!(SecurityValidator::validate_outbound_url("http://[::ffff:169.254.169.254]/").is_err());
+    assert!(SecurityValidator::validate_outbound_url("http://[fc00::1]/").is_err());
+
     // Valid public domains are allowed
     assert!(SecurityValidator::validate_outbound_url("https://example.com/docs").is_ok());
 }
@@ -78,3 +84,16 @@ fn test_sql_injection_defense_via_parameterization() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].entity_name, malicious_input);
 }
+
+#[test]
+fn test_edge_case_defensive_bounds() {
+    // Zero-length chunking must return empty vector without panicking
+    let chunks = chronofact::ContentExtractor::chunk_text("Testing robust chunking bounds", 0);
+    assert!(chunks.is_empty());
+
+    // WorkingBuffer with 0 max_turns
+    let mut buffer = chronofact::memory::WorkingBuffer::new(0);
+    buffer.push("user", "Hello");
+    assert!(buffer.get_messages().is_empty());
+}
+

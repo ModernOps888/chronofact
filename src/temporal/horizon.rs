@@ -1,6 +1,6 @@
 use super::registry::ModelHorizon;
 use super::scanner::TemporalScanResult;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +56,7 @@ impl HorizonCalculator {
 
         // If the query touches recent years or entities, and the model is post-freeze:
         let is_post_freeze_query = scan.mentioned_years.iter().any(|&yr| {
-            let model_freeze_year = model.estimated_training_freeze.format("%Y").to_string().parse::<i32>().unwrap_or(2024);
+            let model_freeze_year = model.estimated_training_freeze.year();
             yr >= model_freeze_year
         });
 

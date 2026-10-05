@@ -23,6 +23,9 @@ impl WorkingBuffer {
     }
 
     pub fn push(&mut self, role: &str, content: &str) {
+        if self.max_turns == 0 {
+            return;
+        }
         if self.history.len() >= self.max_turns * 2 {
             self.history.pop_front();
         }

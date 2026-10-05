@@ -76,7 +76,23 @@ impl SecurityValidator {
                 false
             }
             IpAddr::V6(v6) => {
-                v6.is_loopback() || v6.is_unspecified()
+                if v6.is_loopback() || v6.is_unspecified() {
+                    return true;
+                }
+                // Check IPv4-mapped IPv6 (::ffff:x.x.x.x)
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return Self::is_private_or_restricted_ip(IpAddr::V4(v4));
+                }
+                // Check IPv6 Unique Local addresses (fc00::/7)
+                let seg0 = v6.segments()[0];
+                if (seg0 & 0xfe00) == 0xfc00 {
+                    return true;
+                }
+                // Check IPv6 Link-Local unicast (fe80::/10)
+                if (seg0 & 0xffc0) == 0xfe80 {
+                    return true;
+                }
+                false
             }
         }
     }
