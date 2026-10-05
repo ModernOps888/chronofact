@@ -227,9 +227,9 @@ async fn stress_test_scenario_3_adversarial_inbound_security_attacks() {
 }
 
 #[tokio::test]
-async fn stress_test_scenario_4_high_throughput_nli_claim_verification() {
+async fn stress_test_scenario_4_high_throughput_claim_verification() {
     println!("\n==================================================================");
-    println!("🔥 SCENARIO 4: HIGH-THROUGHPUT NLI CLAIM VERIFICATION STRESS TEST");
+    println!("🔥 SCENARIO 4: HIGH-THROUGHPUT LEXICAL & INVARIANT VERIFICATION STRESS TEST");
     println!("==================================================================");
 
     let extractor = ClaimExtractor::new();
@@ -262,7 +262,7 @@ async fn stress_test_scenario_4_high_throughput_nli_claim_verification() {
     println!("Average Claim Set Latency:         {:.3} ms", avg_latency_ms);
     println!("Throughput:                        {:.1} claim sets / sec", (iterations as f64) / elapsed.as_secs_f64());
 
-    assert!(avg_latency_ms < 20.0, "NLI verification must be strictly sub-20ms per claim set (was {:.2}ms)", avg_latency_ms);
+    assert!(avg_latency_ms < 20.0, "Claim verification must be strictly sub-20ms per claim set (was {:.2}ms)", avg_latency_ms);
 }
 
 #[tokio::test]

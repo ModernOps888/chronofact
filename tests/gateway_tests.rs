@@ -126,7 +126,7 @@ async fn test_gateway_inbound_security_sanitization() {
 }
 
 #[tokio::test]
-async fn test_gateway_outbound_nli_claim_verification() {
+async fn test_gateway_outbound_claim_verification() {
     let extractor = ClaimExtractor::new();
     let verifier = FactVerifier::new();
 
@@ -140,7 +140,7 @@ async fn test_gateway_outbound_nli_claim_verification() {
     let duration = start.elapsed();
 
     // Verification must complete under 20ms
-    assert!(duration.as_millis() < 20, "NLI verification took {}ms (>20ms)", duration.as_millis());
+    assert!(duration.as_millis() < 20, "Claim verification took {}ms (>20ms)", duration.as_millis());
     assert_eq!(report.total_claims, claims.len());
 }
 

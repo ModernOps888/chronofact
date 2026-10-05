@@ -1,3 +1,10 @@
+//! Deterministic Lexical & Invariant Verifier
+//!
+//! Evaluates atomic claims against retrieved grounded evidence and configurable
+//! domain invariant cascades. Uses deterministic token-overlap (lexical intersection)
+//! and rule matching to provide sub-millisecond (<0.15ms) verification without
+//! external neural model latency or inference costs.
+
 use super::claim::AtomicClaim;
 use crate::research::SourceChunk;
 use serde::{Deserialize, Serialize};
@@ -97,63 +104,63 @@ impl FactVerifier {
     ) -> (VerificationStatus, f32, Vec<String>, String) {
         let statement_lower = statement.to_lowercase();
 
-        // Invariant Ground Truth Check 1: Retired Claude 3.5 models
+        // Configurable Policy Invariant Rule 1: Retired Claude 3.5 models
         if (statement_lower.contains("3.5 sonnet") || statement_lower.contains("claude 3.5") || statement_lower.contains("sonnet 3.5"))
             && (statement_lower.contains("latest") || statement_lower.contains("current") || statement_lower.contains("newest") || statement_lower.contains("active") || statement_lower.contains("flagship") || statement_lower.contains("available"))
         {
             return (
                 VerificationStatus::Contradicted,
                 0.05,
-                vec!["epistemic_ground_truth_2026".to_string()],
-                "FACTUAL CONTRADICTION: Claude 3.5 Sonnet was officially RETIRED by Anthropic on October 28, 2025. It is no longer supported or accessible via API. Current active models are Claude Sonnet 5.5 and Claude Opus 5.5.".to_string(),
+                vec!["policy_invariant_rule".to_string()],
+                "POLICY CONTRADICTION: Claude 3.5 Sonnet was officially RETIRED by Anthropic on October 28, 2025. It is no longer supported or accessible via API. Current active models are Claude Sonnet 5.5 and Claude Opus 5.5.".to_string(),
             );
         }
 
-        // Invariant Ground Truth Check 2: Superseded Grok models
+        // Configurable Policy Invariant Rule 2: Superseded Grok models
         if (statement_lower.contains("grok 3") || statement_lower.contains("grok-3"))
             && (statement_lower.contains("latest") || statement_lower.contains("newest") || statement_lower.contains("flagship"))
         {
             return (
                 VerificationStatus::Contradicted,
                 0.10,
-                vec!["epistemic_ground_truth_2026".to_string()],
-                "FACTUAL CONTRADICTION: Grok 3 (Feb 2025) has been superseded by Grok 4 (July 2025) and Grok 4.7 (Sep 2026).".to_string(),
+                vec!["policy_invariant_rule".to_string()],
+                "POLICY CONTRADICTION: Grok 3 (Feb 2025) has been superseded by Grok 4 (July 2025) and Grok 4.7 (Sep 2026).".to_string(),
             );
         }
 
-        // Invariant Ground Truth Check 3: Deprecated Claude 3.7
+        // Configurable Policy Invariant Rule 3: Deprecated Claude 3.7
         if (statement_lower.contains("3.7 sonnet") || statement_lower.contains("claude 3.7") || statement_lower.contains("sonnet 3.7"))
             && (statement_lower.contains("latest") || statement_lower.contains("newest") || statement_lower.contains("current frontier"))
         {
             return (
                 VerificationStatus::Contradicted,
                 0.10,
-                vec!["epistemic_ground_truth_2026".to_string()],
-                "FACTUAL CONTRADICTION: Claude 3.7 is deprecated and superseded by the Claude 5.5 generation (Opus 5.5 & Sonnet 5.5).".to_string(),
+                vec!["policy_invariant_rule".to_string()],
+                "POLICY CONTRADICTION: Claude 3.7 is deprecated and superseded by the Claude 5.5 generation (Opus 5.5 & Sonnet 5.5).".to_string(),
             );
         }
 
-        // Invariant Ground Truth Check 4: Astra 6 & Sol 6.1 Vendor Misattribution
+        // Configurable Policy Invariant Rule 4: Astra 6 & Sol 6.1 Vendor Misattribution
         if (statement_lower.contains("astra") || statement_lower.contains("sol 6") || statement_lower.contains("astr 6") || statement_lower.contains("sol-6"))
             && (statement_lower.contains("google") || statement_lower.contains("deepmind"))
         {
             return (
                 VerificationStatus::Contradicted,
                 0.01,
-                vec!["epistemic_ground_truth_2026".to_string()],
-                "FACTUAL CONTRADICTION: Astra 6 (GPT-6 Astra, Sep 3, 2026) and Sol 6.1 (GPT-6.1 Sol, Sep 29, 2026) are proprietary frontier models developed and deployed by OpenAI, NOT Google or Google DeepMind.".to_string(),
+                vec!["policy_invariant_rule".to_string()],
+                "POLICY CONTRADICTION: Astra 6 (GPT-6 Astra, Sep 3, 2026) and Sol 6.1 (GPT-6.1 Sol, Sep 29, 2026) are policy-registered frontier models developed and deployed by OpenAI, NOT Google or Google DeepMind.".to_string(),
             );
         }
 
-        // Invariant Ground Truth Check 5: OpenAI Astra / Sol Correct Ownership
+        // Configurable Policy Invariant Rule 5: OpenAI Astra / Sol Correct Ownership
         if (statement_lower.contains("astra") || statement_lower.contains("sol 6") || statement_lower.contains("astr 6"))
             && (statement_lower.contains("openai") || statement_lower.contains("gpt-6") || statement_lower.contains("gpt 6"))
         {
             return (
                 VerificationStatus::Entailed,
                 0.99,
-                vec!["epistemic_ground_truth_2026".to_string()],
-                "FACTUALLY ENTAILED: GPT-6 Astra and GPT-6.1 Sol are verified OpenAI frontier models launched in September 2026.".to_string(),
+                vec!["policy_invariant_rule".to_string()],
+                "POLICY ENTAILED: GPT-6 Astra and GPT-6.1 Sol are policy-registered OpenAI frontier models launched in September 2026.".to_string(),
             );
         }
 

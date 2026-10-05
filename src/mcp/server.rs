@@ -588,7 +588,7 @@ impl McpServer {
             .map_err(|e| format!("Upstream tool execution error: {}", e))?;
         drop(gw_guard);
 
-        // 4. Outbound Cognitive Epistemic Verification (NLI Anti-Hallucination)
+        // 4. Outbound Cognitive Epistemic Verification (Deterministic Lexical & Invariant Check)
         let verification_info = if verify_output {
             let result_str = upstream_result.to_string();
             let claims = self.extractor.extract_claims(&result_str);

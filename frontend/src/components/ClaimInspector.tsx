@@ -25,13 +25,13 @@ export const ClaimInspector: React.FC<Props> = ({ report, sources, onVerifyCusto
       {/* Header Card */}
       <div className="bg-[#0b0f19]/95 border border-amber-500/30 rounded-2xl p-6 backdrop-blur-xl shadow-2xl gold-border-glow">
         <div className="flex items-center gap-2 text-amber-400 font-mono text-xs uppercase tracking-wider mb-1 font-bold">
-          <ShieldCheck className="w-4 h-4 text-amber-400" /> Pillar 2: NLI Claim Deconstruction & Grounding
+          <ShieldCheck className="w-4 h-4 text-amber-400" /> Pillar 2: Lexical & Invariant Claim Deconstruction
         </div>
         <h2 className="text-2xl font-black text-white tracking-tight font-mono">
-          Atomic Claim Verifier & Hallucination Auditor
+          Atomic Claim Verifier & Invariant Auditor
         </h2>
         <p className="text-slate-400 text-sm mt-1 max-w-3xl">
-          Deconstructs model responses into discrete atomic assertions, executes Natural Language Inference against retrieved ground-truth sources, and detects factual contradictions.
+          Deconstructs model responses into discrete atomic assertions, executes deterministic lexical and invariant checks against retrieved ground-truth sources, and detects factual contradictions.
         </p>
 
         {/* Custom Text Auditor Input */}
@@ -134,7 +134,7 @@ export const ClaimInspector: React.FC<Props> = ({ report, sources, onVerifyCusto
                 </div>
 
                 <div className="text-xs text-slate-400 font-mono bg-[#080b12] p-2.5 rounded border border-slate-800/80">
-                  <span className="text-amber-400 font-bold">NLI Rationale:</span> {vc.rationale}
+                  <span className="text-amber-400 font-bold">Verification Rationale:</span> {vc.rationale}
                 </div>
               </div>
             ))}

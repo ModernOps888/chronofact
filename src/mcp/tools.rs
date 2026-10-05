@@ -41,7 +41,7 @@ pub fn list_tools() -> Value {
             },
             {
                 "name": "chronofact_verify_claims",
-                "description": "Decomposes a text response into atomic propositions, checks each against retrieved source evidence, and scores hallucination risk.",
+                "description": "Decomposes a text response into atomic propositions, checks each against retrieved source evidence using deterministic lexical and invariant rules, and scores hallucination risk.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -188,7 +188,7 @@ pub fn list_tools() -> Value {
                         },
                         "verify_output": {
                             "type": "boolean",
-                            "description": "Whether to perform NLI anti-hallucination claim audit on tool output (default: true)"
+                            "description": "Whether to perform deterministic lexical and invariant anti-hallucination claim audit on tool output (default: true)"
                         }
                     },
                     "required": ["name"]

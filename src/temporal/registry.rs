@@ -1,3 +1,16 @@
+//! Configurable Model Horizon Registry & Calibration Policy Engine
+//!
+//! # Epistemic Policy Disclosure
+//! The model records seeded by default represent configurable policy templates,
+//! simulation baselines, and historical calibration horizons. They are explicitly
+//! NOT dogmatic or unverifiable absolute ground truth.
+//!
+//! In production agent deployments, model cutoffs and freeze dates are dynamic.
+//! Teams should supply their own organizationally vetted policy configurations
+//! (via API or external config). This built-in registry serves as an extensible
+//! calibration reference for calculating knowledge lag deltas and injecting
+//! `<chronofact_temporal_anchor>` system guidance.
+
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -399,4 +412,12 @@ impl ModelRegistry {
         list.sort_by(|a, b| b.public_release_date.cmp(&a.public_release_date));
         list
     }
+
+    /// Dynamically registers or updates a model horizon policy.
+    /// This allows users and teams to configure their own custom models and cutoffs.
+    pub fn register_model(&mut self, horizon: ModelHorizon) {
+        let key = horizon.model_id.to_lowercase();
+        self.models.insert(key, horizon);
+    }
 }
+
