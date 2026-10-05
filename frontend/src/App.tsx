@@ -10,7 +10,7 @@ import { CostOptimizerHUD } from './components/CostOptimizerHUD';
 import { Sparkles, Clock, ShieldCheck, Database, Lock, MessageSquare, Activity, Coins } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'drift' | 'chat' | 'temporal' | 'claims' | 'memory' | 'security' | 'cost'>('drift');
+  const [activeTab, setActiveTab] = useState<'drift' | 'chat' | 'temporal' | 'claims' | 'memory' | 'security' | 'cost'>('cost');
   const [models, setModels] = useState<ModelHorizon[]>([]);
   const [selectedModel, setSelectedModel] = useState('gpt-6-astra');
   const [projectId, setProjectId] = useState('antigravity-ide');
