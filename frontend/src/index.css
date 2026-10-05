@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#07090e] text-slate-100 font-sans antialiased;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(245, 158, 11, 0.07) 0px, transparent 40%),
+      radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.06) 0px, transparent 40%),
+      radial-gradient(at 50% 50%, rgba(10, 14, 23, 0.5) 0px, transparent 100%);
+    background-attachment: fixed;
+  }
+}
+
+/* Luxurious Gold Selection */
+::selection {
+  background-color: #facc15;
+  color: #000000;
+}
+
+/* Custom 24K Gold & Obsidian Scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #07090e;
+}
+::-webkit-scrollbar-thumb {
+  background: #242f44;
+  border: 1px solid rgba(250, 204, 21, 0.3);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #facc15;
+  border-color: #fef08a;
+  box-shadow: 0 0 10px rgba(250, 204, 21, 0.5);
+}
+
+/* Metallic Gold Shimmer */
+.gold-text-glow {
+  text-shadow: 0 0 18px rgba(250, 204, 21, 0.45);
+}
+
+.gold-border-glow {
+  box-shadow: 0 0 20px rgba(250, 204, 21, 0.15), inset 0 0 15px rgba(250, 204, 21, 0.05);
+}
