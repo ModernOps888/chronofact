@@ -170,6 +170,8 @@ The frontend is a dark-mode, obsidian and imperial gold telemetry dashboard buil
 * **Security Audit**: Real-time firewall status, SSRF vector audit, and parameterization verification.
 * **Cost & Token Optimizer (Pillar 4)**: Real-time tokens saved counter, USD savings calculation, and interactive TF-IDF schema pruning simulator.
 
+![ChronoFact Live Telemetry Cockpit](docs/screenshots/chronofact_cockpit_live.png)
+
 ---
 
 ## 📊 Empirical Verification & Test Benchmarks
