@@ -13,6 +13,8 @@ pub struct UpstreamServerConfig {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -33,6 +35,7 @@ impl UpstreamServerConfig {
             args,
             env: HashMap::new(),
             url: None,
+            headers: None,
             enabled: true,
             handshake_timeout_secs: Some(15),
             request_timeout_secs: Some(30),
@@ -46,10 +49,16 @@ impl UpstreamServerConfig {
             args: Vec::new(),
             env: HashMap::new(),
             url: Some(url.into()),
+            headers: None,
             enabled: true,
             handshake_timeout_secs: Some(10),
             request_timeout_secs: Some(30),
         }
+    }
+
+    pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
+        self.headers = Some(headers);
+        self
     }
 }
 

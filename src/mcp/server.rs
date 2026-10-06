@@ -512,32 +512,6 @@ impl McpServer {
                     Ok(json!([]))
                 }
             }
-            "gateway_register_server" => {
-                let name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing name")?;
-                let command = args.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let args_list = args.get("args").and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
-                    .unwrap_or_default();
-                let url = args.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
-
-                if let Some(ref gw) = self.gateway {
-                    let config = crate::gateway::UpstreamServerConfig {
-                        name: name.to_string(),
-                        command,
-                        args: args_list,
-                        env: std::collections::HashMap::new(),
-                        url,
-                        enabled: true,
-                        handshake_timeout_secs: Some(15),
-                        request_timeout_secs: Some(30),
-                    };
-                    let mut gw_guard = gw.write().await;
-                    gw_guard.register_and_connect(config).await;
-                    Ok(json!({ "status": "registered", "server": name }))
-                } else {
-                    Err("Gateway subsystem not initialized".to_string())
-                }
-            }
             "gateway_call_tool" => {
                 let tool_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing name")?;
                 let tool_args = args.get("arguments").cloned().unwrap_or(json!({}));

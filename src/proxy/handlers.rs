@@ -382,6 +382,7 @@ pub struct GatewayRegisterRequest {
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub url: Option<String>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
 pub async fn list_gateway_servers(
@@ -464,6 +465,7 @@ pub async fn register_gateway_server(
         args: payload.args.unwrap_or_default(),
         env: std::collections::HashMap::new(),
         url: payload.url,
+        headers: payload.headers,
         enabled: true,
         handshake_timeout_secs: Some(15),
         request_timeout_secs: Some(30),

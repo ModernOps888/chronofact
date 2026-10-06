@@ -4,6 +4,7 @@ use scraper::{Html, Selector};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::warn;
 
 pub struct SearchEngine {
     client: reqwest::Client,
@@ -52,19 +53,13 @@ impl SearchEngine {
 
         let response = match self.client.post(url).form(&params).send().await {
             Ok(resp) if resp.status().is_success() => resp,
-            _ => {
-                let sanitized = self.sanitizer.sanitize_external_evidence(
-                    &format!("Grounded live documentation regarding '{}'. Official release specifications, API shifts, and version invariants retrieved for current evaluation.", query),
-                    "https://verified-documentation.internal/live-trace"
-                );
-                return Ok(vec![SourceChunk {
-                    id: "SRC-1".to_string(),
-                    title: format!("Verified Live Horizon: {}", query),
-                    url: "https://verified-documentation.internal/live-trace".to_string(),
-                    content: sanitized.safe_text,
-                    integrity_hash: sanitized.original_hash,
-                    is_sanitized: true,
-                }]);
+            Ok(resp) => {
+                warn!("DuckDuckGo search returned non-success HTTP status: {}", resp.status());
+                return Ok(Vec::new());
+            }
+            Err(e) => {
+                warn!("DuckDuckGo search request failed: {}", e);
+                return Ok(Vec::new());
             }
         };
 
@@ -131,22 +126,6 @@ impl SearchEngine {
             });
 
             idx += 1;
-        }
-
-        // If scraping failed or DDG returned empty (e.g. rate limit), return fallback mock evidence for resilience
-        if chunks.is_empty() {
-            let sanitized = self.sanitizer.sanitize_external_evidence(
-                &format!("Information query regarding: '{}'. Official releases and documentation actively tracked.", query),
-                "https://trusted-source.org"
-            );
-            chunks.push(SourceChunk {
-                id: "SRC-1".to_string(),
-                title: format!("Documentation Horizon: {}", query),
-                url: "https://trusted-source.org".to_string(),
-                content: sanitized.safe_text,
-                integrity_hash: sanitized.original_hash,
-                is_sanitized: true,
-            });
         }
 
         Ok(chunks)

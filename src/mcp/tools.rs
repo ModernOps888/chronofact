@@ -201,33 +201,6 @@ pub fn list_tools() -> Value {
                     "type": "object",
                     "properties": {}
                 }
-            },
-            {
-                "name": "gateway_register_server",
-                "description": "Dynamically registers and connects a new upstream MCP server (stdio child process or HTTP URL) at runtime without restarting the daemon.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Unique identifier for the upstream server"
-                        },
-                        "command": {
-                            "type": "string",
-                            "description": "Executable path for stdio servers (e.g. 'node', 'python', 'docker')"
-                        },
-                        "args": {
-                            "type": "array",
-                            "description": "Command line arguments",
-                            "items": { "type": "string" }
-                        },
-                        "url": {
-                            "type": "string",
-                            "description": "URL for HTTP/SSE servers"
-                        }
-                    },
-                    "required": ["name"]
-                }
             }
         ]
     })

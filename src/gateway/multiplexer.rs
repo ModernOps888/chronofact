@@ -37,6 +37,7 @@ pub struct GatewayMultiplexer {
     all_prompts: Vec<RegisteredPrompt>,
     death_tx: DeathSender,
     http_client: reqwest::Client,
+    http_sessions: std::sync::RwLock<HashMap<String, String>>,
 }
 
 impl GatewayMultiplexer {
@@ -62,6 +63,7 @@ impl GatewayMultiplexer {
             all_prompts: Vec::new(),
             death_tx,
             http_client,
+            http_sessions: std::sync::RwLock::new(HashMap::new()),
         };
 
         for config in server_configs {
@@ -241,15 +243,14 @@ impl GatewayMultiplexer {
                 }
             });
 
-            let resp = self.http_client.post(url).json(&req_body).send().await?;
-            let body: serde_json::Value = resp.json().await?;
+            let body = self.send_mcp_http_request(server_name, url, &server.config, &req_body).await?;
 
             if let Some(res) = body.get("result") {
                 Ok(res.clone())
             } else if let Some(err) = body.get("error") {
                 Err(anyhow::anyhow!("Upstream error: {}", err))
             } else {
-                Err(anyhow::anyhow!("Invalid response from upstream HTTP server"))
+                Err(anyhow::anyhow!("Invalid response from upstream HTTP server: {}", body))
             }
         } else if let Some(conn) = self.stdio_connections.get(server_name) {
             // Stdio transport call
@@ -289,7 +290,7 @@ impl GatewayMultiplexer {
                 "method": "resources/read",
                 "params": { "uri": uri }
             });
-            let resp = self.http_client.post(url).json(&req).send().await?.json::<serde_json::Value>().await?;
+            let resp = self.send_mcp_http_request(server_name, url, &server.config, &req).await?;
             resp.get("result").cloned().ok_or_else(|| anyhow::anyhow!("Resource read error: {:?}", resp.get("error")))
         } else if let Some(conn) = self.stdio_connections.get(server_name) {
             conn.send_request("resources/read", serde_json::json!({ "uri": uri })).await
@@ -408,6 +409,128 @@ impl GatewayMultiplexer {
         }
     }
 
+    /// Retrieve active MCP session ID for an HTTP upstream server
+    pub fn get_http_session_id(&self, server_name: &str) -> Option<String> {
+        self.http_sessions.read().ok().and_then(|s| s.get(server_name).cloned())
+    }
+
+    /// Parse an MCP HTTP response, supporting both standard JSON and Streamable HTTP Server-Sent Events (SSE)
+    pub fn parse_mcp_response(content_type: Option<&str>, body_text: &str) -> anyhow::Result<serde_json::Value> {
+        let trimmed = body_text.trim();
+        if trimmed.is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+
+        let is_sse = content_type
+            .map(|ct| ct.to_lowercase().contains("text/event-stream"))
+            .unwrap_or(false)
+            || (!trimmed.starts_with('{') && !trimmed.starts_with('[') && trimmed.contains("data:"));
+
+        if is_sse {
+            Self::parse_sse_stream(trimmed)
+        } else {
+            serde_json::from_str(trimmed)
+                .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {} (Body: {})", e, trimmed))
+        }
+    }
+
+    /// Extract the JSON-RPC response object from an SSE stream
+    pub fn parse_sse_stream(body_text: &str) -> anyhow::Result<serde_json::Value> {
+        let mut last_candidate = None;
+
+        // Standard SSE event boundary: double newline (\n\n or \r\n\r\n)
+        let normalized = body_text.replace("\r\n", "\n");
+        let chunks: Vec<&str> = normalized.split("\n\n").collect();
+        for chunk in chunks {
+            let mut data_lines = Vec::new();
+            for line in chunk.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("data:") {
+                    let payload = rest.trim_start();
+                    if !payload.is_empty() && payload != "[DONE]" {
+                        data_lines.push(payload);
+                    }
+                }
+            }
+
+            if !data_lines.is_empty() {
+                let merged = data_lines.join("\n");
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&merged) {
+                    if parsed.get("result").is_some() || parsed.get("error").is_some() {
+                        return Ok(parsed);
+                    }
+                    last_candidate = Some(parsed);
+                }
+            }
+        }
+
+        if let Some(cand) = last_candidate {
+            return Ok(cand);
+        }
+
+        // Fallback: search each line starting with data:
+        for line in normalized.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("data:") {
+                let payload = rest.trim_start();
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload) {
+                    if parsed.get("result").is_some() || parsed.get("error").is_some() {
+                        return Ok(parsed);
+                    }
+                    last_candidate = Some(parsed);
+                }
+            }
+        }
+
+        last_candidate.ok_or_else(|| anyhow::anyhow!("No valid JSON-RPC message found in SSE stream: {}", body_text))
+    }
+
+    /// Send a Streamable HTTP-compliant MCP request with session tracking, Accept headers, and auth
+    pub async fn send_mcp_http_request(
+        &self,
+        server_name: &str,
+        url: &str,
+        config: &UpstreamServerConfig,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut builder = self.http_client.post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream");
+
+        // Attach Mcp-Session-Id if previously established for this upstream server
+        if let Some(session_id) = self.get_http_session_id(server_name) {
+            builder = builder.header("Mcp-Session-Id", session_id);
+        }
+
+        // Attach custom authentication headers from config
+        if let Some(ref headers) = config.headers {
+            for (k, v) in headers {
+                builder = builder.header(k, v);
+            }
+        }
+
+        let resp = builder.json(payload).send().await?;
+
+        // Extract Mcp-Session-Id from response headers if present
+        if let Some(sess_val) = resp.headers().get("mcp-session-id") {
+            if let Ok(sess_str) = sess_val.to_str() {
+                if let Ok(mut sessions) = self.http_sessions.write() {
+                    sessions.insert(server_name.to_string(), sess_str.trim().to_string());
+                }
+            }
+        }
+
+        let status = resp.status();
+        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+        let body_text = resp.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow::anyhow!("Upstream HTTP server returned status {}: {}", status, body_text));
+        }
+
+        Self::parse_mcp_response(content_type.as_deref(), &body_text)
+    }
+
     async fn discover_http(
         &self,
         config: &UpstreamServerConfig,
@@ -431,12 +554,12 @@ impl GatewayMultiplexer {
             }
         });
 
-        let init_resp = match self.http_client.post(url).json(&init_req).send().await {
-            Ok(r) => match r.json::<serde_json::Value>().await {
-                Ok(j) => j,
-                Err(_) => return (Vec::new(), Vec::new(), Vec::new(), false),
-            },
-            Err(_) => return (Vec::new(), Vec::new(), Vec::new(), false),
+        let init_resp = match self.send_mcp_http_request(&config.name, url, config, &init_req).await {
+            Ok(j) => j,
+            Err(e) => {
+                warn!("Gateway: Failed to initialize HTTP server '{}': {}", config.name, e);
+                return (Vec::new(), Vec::new(), Vec::new(), false);
+            }
         };
 
         let caps = init_resp
@@ -445,10 +568,11 @@ impl GatewayMultiplexer {
             .cloned()
             .unwrap_or_default();
 
-        let _ = self.http_client.post(url).json(&serde_json::json!({
+        let notify_req = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
-        })).send().await;
+        });
+        let _ = self.send_mcp_http_request(&config.name, url, config, &notify_req).await;
 
         let has_tools = caps.get("tools").is_some();
         let has_resources = caps.get("resources").is_some();
@@ -456,15 +580,11 @@ impl GatewayMultiplexer {
 
         let tools = if has_tools {
             let req = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
-            if let Ok(resp) = self.http_client.post(url).json(&req).send().await {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    body.get("result")
-                        .and_then(|r| r.get("tools").cloned())
-                        .and_then(|t| serde_json::from_value(t).ok())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
+            if let Ok(body) = self.send_mcp_http_request(&config.name, url, config, &req).await {
+                body.get("result")
+                    .and_then(|r| r.get("tools").cloned())
+                    .and_then(|t| serde_json::from_value(t).ok())
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             }
@@ -474,15 +594,11 @@ impl GatewayMultiplexer {
 
         let resources = if has_resources {
             let req = serde_json::json!({ "jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {} });
-            if let Ok(resp) = self.http_client.post(url).json(&req).send().await {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    body.get("result")
-                        .and_then(|r| r.get("resources").cloned())
-                        .and_then(|r| serde_json::from_value(r).ok())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
+            if let Ok(body) = self.send_mcp_http_request(&config.name, url, config, &req).await {
+                body.get("result")
+                    .and_then(|r| r.get("resources").cloned())
+                    .and_then(|r| serde_json::from_value(r).ok())
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             }
@@ -492,15 +608,11 @@ impl GatewayMultiplexer {
 
         let prompts = if has_prompts {
             let req = serde_json::json!({ "jsonrpc": "2.0", "id": 4, "method": "prompts/list", "params": {} });
-            if let Ok(resp) = self.http_client.post(url).json(&req).send().await {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    body.get("result")
-                        .and_then(|r| r.get("prompts").cloned())
-                        .and_then(|p| serde_json::from_value(p).ok())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
+            if let Ok(body) = self.send_mcp_http_request(&config.name, url, config, &req).await {
+                body.get("result")
+                    .and_then(|r| r.get("prompts").cloned())
+                    .and_then(|p| serde_json::from_value(p).ok())
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             }

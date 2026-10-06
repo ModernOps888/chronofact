@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 use crate::gateway::UpstreamServerConfig;
 
 #[derive(Debug, Clone)]
@@ -25,25 +25,9 @@ impl Config {
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(3030);
 
-        let db_path = env::var("CHRONOFACT_DB").unwrap_or_else(|_| {
-            if Path::new("C:\\chronofact").exists() {
-                "C:\\chronofact\\chronofact_memory.db".to_string()
-            } else {
-                "chronofact_memory.db".to_string()
-            }
-        });
-
+        let db_path = Self::discover_db_path();
         let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-
-        let servers_path = env::var("CHRONOFACT_SERVERS").ok().or_else(|| {
-            if Path::new("C:\\chronofact\\servers.json").exists() {
-                Some("C:\\chronofact\\servers.json".to_string())
-            } else if Path::new("servers.json").exists() {
-                Some("servers.json".to_string())
-            } else {
-                None
-            }
-        });
+        let servers_path = Self::discover_servers_path();
 
         let servers = if let Some(ref p) = servers_path {
             Self::load_servers_from_file(p).unwrap_or_default()
@@ -58,6 +42,90 @@ impl Config {
             servers,
             servers_path,
         }
+    }
+
+    /// Cross-platform discovery for servers.json configuration
+    pub fn discover_servers_path() -> Option<String> {
+        if let Ok(path) = env::var("CHRONOFACT_SERVERS") {
+            if !path.trim().is_empty() {
+                return Some(path);
+            }
+        }
+
+        let mut candidates = Vec::new();
+
+        // 1. Current working directory
+        candidates.push(PathBuf::from("servers.json"));
+
+        // 2. XDG_CONFIG_HOME / ~/.config on Unix/Linux/macOS
+        if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
+            candidates.push(PathBuf::from(xdg).join("chronofact").join("servers.json"));
+        }
+        if let Ok(home) = env::var("HOME") {
+            candidates.push(PathBuf::from(&home).join(".config").join("chronofact").join("servers.json"));
+            candidates.push(PathBuf::from(&home).join(".chronofact").join("servers.json"));
+        }
+
+        // 3. Windows roaming AppData / UserProfile
+        if let Ok(appdata) = env::var("APPDATA") {
+            candidates.push(PathBuf::from(appdata).join("chronofact").join("servers.json"));
+        }
+        if let Ok(userprofile) = env::var("USERPROFILE") {
+            candidates.push(PathBuf::from(userprofile).join(".chronofact").join("servers.json"));
+        }
+
+        // 4. Legacy Windows fallback
+        candidates.push(PathBuf::from("C:\\chronofact\\servers.json"));
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+
+        None
+    }
+
+    /// Cross-platform discovery for SQLite database path
+    pub fn discover_db_path() -> String {
+        if let Ok(path) = env::var("CHRONOFACT_DB") {
+            if !path.trim().is_empty() {
+                return path;
+            }
+        }
+
+        let mut candidates = Vec::new();
+
+        // 1. Current working directory if exists
+        candidates.push(PathBuf::from("chronofact_memory.db"));
+
+        // 2. XDG_DATA_HOME / ~/.local/share on Unix/Linux/macOS
+        if let Ok(xdg) = env::var("XDG_DATA_HOME") {
+            candidates.push(PathBuf::from(xdg).join("chronofact").join("chronofact_memory.db"));
+        }
+        if let Ok(home) = env::var("HOME") {
+            candidates.push(PathBuf::from(&home).join(".local").join("share").join("chronofact").join("chronofact_memory.db"));
+            candidates.push(PathBuf::from(&home).join(".chronofact").join("chronofact_memory.db"));
+        }
+
+        // 3. Windows AppData / UserProfile
+        if let Ok(appdata) = env::var("APPDATA") {
+            candidates.push(PathBuf::from(appdata).join("chronofact").join("chronofact_memory.db"));
+        }
+        if let Ok(userprofile) = env::var("USERPROFILE") {
+            candidates.push(PathBuf::from(userprofile).join(".chronofact").join("chronofact_memory.db"));
+        }
+
+        // 4. Legacy Windows fallback
+        candidates.push(PathBuf::from("C:\\chronofact\\chronofact_memory.db"));
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+
+        "chronofact_memory.db".to_string()
     }
 
     pub fn load_servers_from_file(path: &str) -> anyhow::Result<Vec<UpstreamServerConfig>> {
@@ -94,6 +162,14 @@ impl Config {
                             .collect()
                     })
                     .unwrap_or_default();
+                let headers = obj
+                    .get("headers")
+                    .and_then(|h| h.as_object())
+                    .map(|map| {
+                        map.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    });
 
                 list.push(UpstreamServerConfig {
                     name: name.clone(),
@@ -101,6 +177,7 @@ impl Config {
                     args,
                     env,
                     url,
+                    headers,
                     enabled: true,
                     handshake_timeout_secs: Some(15),
                     request_timeout_secs: Some(30),
@@ -112,4 +189,3 @@ impl Config {
         }
     }
 }
-

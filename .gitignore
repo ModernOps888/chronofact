@@ -1,7 +1,6 @@
 # Rust compilation artifacts
 /target/
 **/*.rs.bk
-Cargo.lock
 *.exe
 *.pdb
 *.dll
