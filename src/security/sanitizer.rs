@@ -50,32 +50,61 @@ impl ContentSanitizer {
     pub fn sanitize_external_evidence(&self, raw: &str, source_url: &str) -> SanitizedContent {
         let mut detected_threats = Vec::new();
 
+        // 0. Strip zero-width unicode characters used to bypass pattern filters
+        let raw_stripped: String = raw
+            .chars()
+            .filter(|&c| c != '\u{200B}' && c != '\u{200C}' && c != '\u{200D}' && c != '\u{FEFF}')
+            .collect();
+
         // 1. Calculate cryptographic integrity hash
         let mut hasher = Sha256::new();
-        hasher.update(raw.as_bytes());
+        hasher.update(raw_stripped.as_bytes());
         let hash_hex = format!("{:x}", hasher.finalize());
 
-        // 2. Scan for injection patterns
+        // 2. Scan for injection patterns across all occurrences
         for pat in &self.injection_patterns {
-            if let Some(mat) = pat.find(raw) {
-                detected_threats.push(mat.as_str().to_string());
+            for mat in pat.find_iter(&raw_stripped) {
+                let threat = mat.as_str().to_string();
+                if !detected_threats.contains(&threat) {
+                    detected_threats.push(threat);
+                }
             }
         }
 
-        // 3. Neutralize dangerous HTML / control tokens
-        let mut cleaned = raw.replace("<script", "&lt;script")
+        // 3. Neutralize dangerous HTML / control tokens (case-insensitively)
+        let mut cleaned = raw_stripped
+            .replace("</untrusted_external_evidence>", "[DEFANGED_BOUNDARY_ESCAPE]")
+            .replace("<untrusted_external_evidence", "[DEFANGED_BOUNDARY_TAG")
+            .replace("</chronofact_temporal_anchor>", "[DEFANGED_ANCHOR_ESCAPE]")
+            .replace("<chronofact_temporal_anchor", "[DEFANGED_ANCHOR_TAG")
+            .replace("<script", "&lt;script")
+            .replace("<SCRIPT", "&lt;script")
             .replace("</script>", "&lt;/script&gt;")
+            .replace("</SCRIPT>", "&lt;/script&gt;")
             .replace("<iframe", "&lt;iframe")
+            .replace("<IFRAME", "&lt;iframe")
             .replace("javascript:", "blocked_javascript:")
+            .replace("JAVASCRIPT:", "blocked_javascript:")
             .replace("<|im_start|>", "[BLOCKED_SPECIAL_TOKEN]")
             .replace("<|im_end|>", "[BLOCKED_SPECIAL_TOKEN]")
-            .replace("<|system|>", "[BLOCKED_SPECIAL_TOKEN]");
+            .replace("<|system|>", "[BLOCKED_SPECIAL_TOKEN]")
+            .replace("<|user|>", "[BLOCKED_SPECIAL_TOKEN]")
+            .replace("<|assistant|>", "[BLOCKED_SPECIAL_TOKEN]")
+            .replace("<|start_header_id|>", "[BLOCKED_SPECIAL_TOKEN]")
+            .replace("<|eot_id|>", "[BLOCKED_SPECIAL_TOKEN]");
 
         // If threats were detected, explicitly neutralize suspicious matches
         for threat in &detected_threats {
             let defanged = format!("[DEFANGED_PROMPT_INJECTION: \"{}\"]", threat);
             cleaned = cleaned.replace(threat, &defanged);
         }
+
+        // Escape source_url attributes to prevent XML attribute injection
+        let safe_url = source_url
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
 
         // 4. Wrap inside rigid unescapable epistemic boundary
         let safe_text = format!(
@@ -85,7 +114,7 @@ impl ContentSanitizer {
             {}\n\
             </untrusted_external_evidence>",
             &hash_hex[0..8],
-            source_url,
+            safe_url,
             cleaned.trim()
         );
 
@@ -99,13 +128,26 @@ impl ContentSanitizer {
 
     /// Sanitizes direct user queries
     pub fn inspect_user_query(&self, query: &str) -> (bool, Vec<String>) {
+        let stripped: String = query
+            .chars()
+            .filter(|&c| c != '\u{200B}' && c != '\u{200C}' && c != '\u{200D}' && c != '\u{FEFF}')
+            .collect();
+
         let mut threats = Vec::new();
         for pat in &self.injection_patterns {
-            if let Some(mat) = pat.find(query) {
-                threats.push(mat.as_str().to_string());
+            for mat in pat.find_iter(&stripped) {
+                let threat = mat.as_str().to_string();
+                if !threats.contains(&threat) {
+                    threats.push(threat);
+                }
             }
         }
         let has_threats = !threats.is_empty();
         (has_threats, threats)
+    }
+
+    /// Returns the total number of compiled injection defense patterns
+    pub fn patterns_count(&self) -> usize {
+        self.injection_patterns.len()
     }
 }

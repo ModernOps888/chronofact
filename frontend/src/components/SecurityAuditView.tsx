@@ -42,8 +42,12 @@ export const SecurityAuditView: React.FC<Props> = ({ audit }) => {
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
               SSRF Outbound Firewall
             </h3>
-            <span className="text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold">
-              ACTIVE
+            <span className={`text-xs font-mono px-2 py-0.5 rounded font-bold border ${
+              audit?.ssrf_firewall_enabled
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
+                : 'bg-rose-950 text-rose-300 border-rose-500/40'
+            }`}>
+              {audit?.ssrf_firewall_enabled ? 'ENFORCED' : 'OFFLINE'}
             </span>
           </div>
           <p className="text-xs text-emerald-400/80">
@@ -64,8 +68,12 @@ export const SecurityAuditView: React.FC<Props> = ({ audit }) => {
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
               Prompt Injection Defense
             </h3>
-            <span className="text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold">
-              ACTIVE
+            <span className={`text-xs font-mono px-2 py-0.5 rounded font-bold border ${
+              audit?.prompt_injection_shield_enabled
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
+                : 'bg-rose-950 text-rose-300 border-rose-500/40'
+            }`}>
+              {audit?.prompt_injection_shield_enabled ? 'ENFORCED' : 'OFFLINE'}
             </span>
           </div>
           <p className="text-xs text-emerald-400/80">
@@ -86,8 +94,12 @@ export const SecurityAuditView: React.FC<Props> = ({ audit }) => {
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
               SQL Parameterization & Memory Security
             </h3>
-            <span className="text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold">
-              ACTIVE
+            <span className={`text-xs font-mono px-2 py-0.5 rounded font-bold border ${
+              audit?.sql_parameterization_enforced
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
+                : 'bg-rose-950 text-rose-300 border-rose-500/40'
+            }`}>
+              {audit?.sql_parameterization_enforced ? 'ENFORCED' : 'OFFLINE'}
             </span>
           </div>
           <p className="text-xs text-emerald-400/80">
@@ -107,8 +119,12 @@ export const SecurityAuditView: React.FC<Props> = ({ audit }) => {
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
               Filesystem Sandbox & Rate Limiting
             </h3>
-            <span className="text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold">
-              ACTIVE
+            <span className={`text-xs font-mono px-2 py-0.5 rounded font-bold border ${
+              audit?.memory_isolation_active
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
+                : 'bg-rose-950 text-rose-300 border-rose-500/40'
+            }`}>
+              {audit?.memory_isolation_active ? 'ENFORCED' : 'OFFLINE'}
             </span>
           </div>
           <p className="text-xs text-emerald-400/80">

@@ -19,7 +19,15 @@ impl ApiServer {
 
     pub fn router(&self) -> Router {
         let cors = CorsLayer::new()
-            .allow_origin(Any)
+            .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _| {
+                if let Ok(s) = origin.to_str() {
+                    s.starts_with("http://localhost:")
+                        || s.starts_with("http://127.0.0.1:")
+                        || s.starts_with("http://[::1]:")
+                } else {
+                    false
+                }
+            }))
             .allow_methods(Any)
             .allow_headers(Any);
 
@@ -49,7 +57,34 @@ impl ApiServer {
         let addr = SocketAddr::from(([127, 0, 0, 1], self.port));
         let listener = tokio::net::TcpListener::bind(addr).await?;
         println!("🚀 ChronoFact Epistemic API Server listening on http://{}", addr);
-        axum::serve(listener, app).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+        println!("🛑 ChronoFact Epistemic API Server gracefully stopped.");
         Ok(())
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
 }

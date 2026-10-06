@@ -363,18 +363,37 @@ impl ModelRegistry {
 
         // 2. Normalized alphanumeric match
         let clean_key: String = key.chars().filter(|c| c.is_alphanumeric()).collect();
-        for (k, v) in &self.models {
+        let mut candidates: Vec<(&String, &ModelHorizon)> = self.models.iter().collect();
+        candidates.sort_by_key(|(k, _)| *k);
+
+        for (k, v) in &candidates {
             let clean_k: String = k.chars().filter(|c| c.is_alphanumeric()).collect();
             if clean_key == clean_k {
-                return v.clone();
+                return (*v).clone();
             }
         }
 
-        // 3. Fallback contains match
-        for (k, v) in &self.models {
+        // 3. Fallback deterministic substring match (prioritize longest matching model key)
+        let mut best_match: Option<&ModelHorizon> = None;
+        let mut best_len = 0;
+        for (k, v) in &candidates {
             let clean_k: String = k.chars().filter(|c| c.is_alphanumeric()).collect();
-            if clean_key.contains(&clean_k) || clean_k.contains(&clean_key) {
-                return v.clone();
+            if clean_key.contains(&clean_k) && clean_k.len() > best_len {
+                best_len = clean_k.len();
+                best_match = Some(v);
+            }
+        }
+        if let Some(m) = best_match {
+            return (*m).clone();
+        }
+
+        // 4. Reverse contains (only if clean_key has sufficient specificity >= 5 chars)
+        if clean_key.len() >= 5 {
+            for (k, v) in &candidates {
+                let clean_k: String = k.chars().filter(|c| c.is_alphanumeric()).collect();
+                if clean_k.contains(&clean_key) {
+                    return (*v).clone();
+                }
             }
         }
 

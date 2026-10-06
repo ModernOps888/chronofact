@@ -20,6 +20,7 @@ pub struct MemoryEngine {
 impl MemoryEngine {
     pub fn new_in_memory() -> Result<Self, rusqlite::Error> {
         let conn = Connection::open_in_memory()?;
+        let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
         EpisodicLedger::init_tables(&conn)?;
         SemanticEntityGraph::init_tables(&conn)?;
         Ok(Self {
@@ -29,7 +30,7 @@ impl MemoryEngine {
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
-        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;");
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys = ON;");
         EpisodicLedger::init_tables(&conn)?;
         SemanticEntityGraph::init_tables(&conn)?;
         Ok(Self {

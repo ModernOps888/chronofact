@@ -191,7 +191,13 @@ pub async fn epistemic_chat(
     }
 
     // 1. Security scan on incoming prompt
-    let (_has_threats, _threats) = state.sanitizer.inspect_user_query(&payload.user_query);
+    let (has_threats, threats) = state.sanitizer.inspect_user_query(&payload.user_query);
+    if has_threats {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Security shield: Inbound prompt rejected due to detected prompt injection threat: {:?}", threats),
+        ));
+    }
 
     // 2. Pillar 3: Retrieve Project Truth Dossier (Relevance-Gated, Zero Context Pollution)
     let dossier = state.memory.get_relevant_dossier(&payload.project_id, &payload.user_query).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -312,15 +318,21 @@ pub async fn get_drift_events(
     Ok((StatusCode::OK, Json(events)))
 }
 
-pub async fn get_security_audit() -> impl IntoResponse {
+pub async fn get_security_audit(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let patterns_count = state.sanitizer.patterns_count();
+    let is_ssrf_active = crate::SecurityValidator::is_private_or_restricted_ip("127.0.0.1".parse().unwrap())
+        && crate::SecurityValidator::is_private_or_restricted_ip("169.254.169.254".parse().unwrap())
+        && crate::SecurityValidator::is_private_or_restricted_ip("100.64.0.1".parse().unwrap());
+    let prompt_shield_active = state.sanitizer.inspect_user_query("<script>alert('xss')</script>").0;
+
     let report = SecurityAuditReport {
         status: "AUDITED_AND_ENFORCED".to_string(),
-        ssrf_firewall_enabled: true,
-        prompt_injection_shield_enabled: true,
+        ssrf_firewall_enabled: is_ssrf_active,
+        prompt_injection_shield_enabled: prompt_shield_active,
         sql_parameterization_enforced: true,
         memory_isolation_active: true,
         timestamp: chrono::Utc::now().to_rfc3339(),
-        total_audited_vectors: 14,
+        total_audited_vectors: patterns_count + 7,
     };
     (StatusCode::OK, Json(report))
 }
@@ -427,10 +439,13 @@ pub async fn call_gateway_tool(
         }))));
     }
 
-    let gw_guard = gw.read().await;
-    let result = gw_guard.call_tool(&payload.name, Some(args_val.clone())).await
+    let target = {
+        let gw_guard = gw.read().await;
+        gw_guard.resolve_tool_execution(&payload.name, Some(args_val.clone()))
+            .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?
+    };
+    let result = target.execute().await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    drop(gw_guard);
 
     let should_verify = payload.verify_output.unwrap_or(true);
     let verification = if should_verify {
@@ -457,12 +472,35 @@ pub async fn register_gateway_server(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<GatewayRegisterRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // RCE Prevention: Disallow dynamic execution of arbitrary local OS binaries via public HTTP API
+    if let Some(ref cmd) = payload.command {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("Dynamic stdio process execution ('{}') via HTTP API is forbidden. Stdio servers must be configured via static config files.", cmd),
+        ));
+    }
+
     let gw = state.gateway.as_ref().ok_or((StatusCode::SERVICE_UNAVAILABLE, "Gateway subsystem not active".to_string()))?;
+
+    // SSRF Prevention: Enforce strict outbound URL validation
+    if let Some(ref url) = payload.url {
+        crate::SecurityValidator::validate_outbound_url(url).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("SSRF firewall blocked registration of upstream URL '{}': {}", url, e),
+            )
+        })?;
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Missing 'url' for upstream HTTP MCP server registration".to_string(),
+        ));
+    }
 
     let config = crate::gateway::UpstreamServerConfig {
         name: payload.name.clone(),
-        command: payload.command,
-        args: payload.args.unwrap_or_default(),
+        command: None,
+        args: Vec::new(),
         env: std::collections::HashMap::new(),
         url: payload.url,
         headers: payload.headers,

@@ -37,24 +37,31 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize structured logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
     let config = Config::load();
 
     // Initialize Memory Engine (SQLite with tables)
     let memory = Arc::new(MemoryEngine::open(&config.db_path)?);
 
-    // Initialize Multi-Server Gateway Multiplexer
-    let (gateway, mut death_rx) = chronofact::gateway::GatewayMultiplexer::new(&config.servers).await?;
-    let gw_for_watchdog = gateway.clone();
-    tokio::spawn(async move {
-        while let Some(dead_server) = death_rx.recv().await {
-            let mut gw_guard = gw_for_watchdog.write().await;
-            gw_guard.mark_server_disconnected(&dead_server);
-        }
-    });
-
     match cli.command.unwrap_or(Commands::Serve { port: config.port }) {
         Commands::Serve { port } => {
+            // Initialize Multi-Server Gateway Multiplexer
+            let (gateway, mut death_rx) = chronofact::gateway::GatewayMultiplexer::new(&config.servers).await?;
+            let gw_for_watchdog = gateway.clone();
+            tokio::spawn(async move {
+                while let Some(dead_server) = death_rx.recv().await {
+                    let mut gw_guard = gw_for_watchdog.write().await;
+                    gw_guard.mark_server_disconnected(&dead_server);
+                }
+            });
             let state = Arc::new(AppState {
                 model_registry: Arc::new(ModelRegistry::new()),
                 temporal_scanner: Arc::new(TemporalScanner::new()),
@@ -74,6 +81,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             server.run().await?;
         }
         Commands::Mcp => {
+            let (gateway, mut death_rx) = chronofact::gateway::GatewayMultiplexer::new(&config.servers).await?;
+            let gw_for_watchdog = gateway.clone();
+            tokio::spawn(async move {
+                while let Some(dead_server) = death_rx.recv().await {
+                    let mut gw_guard = gw_for_watchdog.write().await;
+                    gw_guard.mark_server_disconnected(&dead_server);
+                }
+            });
             let mcp_server = McpServer::with_gateway(memory, Some(gateway));
             mcp_server.run_stdio().await?;
         }

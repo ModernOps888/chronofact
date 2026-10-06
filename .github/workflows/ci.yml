@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    name: Build & Test Suite (30 Tests)
+    name: Build & Test Suite (50 Tests)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -36,7 +36,7 @@ jobs:
       - name: Check Codebase
         run: cargo check --all-targets
 
-      - name: Run All 30 Unit & Integration Tests
+      - name: Run All 50 Unit & Integration Tests
         run: cargo test --all --verbose
 
       - name: Build Release Binary

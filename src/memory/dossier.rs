@@ -26,7 +26,7 @@ impl DossierCompiler {
         let entities: Vec<super::l3_graph::ProjectEntity> = if let Some(q) = query {
             let q_trimmed = q.trim();
             if q_trimmed.is_empty() {
-                all_entities
+                Vec::new()
             } else {
                 let stopwords = [
                     "the", "is", "at", "which", "on", "and", "a", "an", "in", "to", "for", "with", "as",
@@ -48,8 +48,15 @@ impl DossierCompiler {
                         .filter(|e| {
                             let name_lower = e.entity_name.to_lowercase();
                             let def_lower = e.definition.to_lowercase();
-                            let type_lower = e.entity_type.to_lowercase();
-                            tokens.iter().any(|t| name_lower.contains(t) || def_lower.contains(t) || type_lower.contains(t))
+                            let name_words: Vec<&str> = name_lower
+                                .split(|c: char| !c.is_alphanumeric())
+                                .filter(|w| w.len() > 1)
+                                .collect();
+                            let def_words: Vec<&str> = def_lower
+                                .split(|c: char| !c.is_alphanumeric())
+                                .filter(|w| w.len() > 2)
+                                .collect();
+                            tokens.iter().any(|t| name_words.contains(&t.as_str()) || def_words.contains(&t.as_str()))
                         })
                         .collect()
                 }
@@ -98,12 +105,11 @@ impl DossierCompiler {
             recent_decisions.push(format!("(Session {}) [{}]: {}", ev.session_id, ev.event_type, ev.description));
         }
 
-        // 4. Assemble Markdown Dossier
+        // 4. Assemble Markdown Dossier (Header without dynamic timestamp for 100% KV cache prefix hits)
         let mut md = format!(
             "<chronofact_project_truth_dossier project=\"{}\">\n\
-            ### 📌 ChronoFact Persistent Project Memory (Cross-Session Truth)\n\
-            *Generated: {}*\n\n",
-            project_id, now
+            ### 📌 ChronoFact Persistent Project Memory (Cross-Session Truth)\n\n",
+            project_id
         );
 
         if !active_tech_stack.is_empty() {
@@ -127,7 +133,7 @@ impl DossierCompiler {
             }
         }
 
-        md.push_str("\n</chronofact_project_truth_dossier>\n");
+        md.push_str(&format!("\n<!-- ChronoFact Memory Snapshot: {} -->\n</chronofact_project_truth_dossier>\n", now));
 
         Ok(ProjectDossier {
             project_id: project_id.to_string(),

@@ -59,6 +59,7 @@ impl StdioConnection {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!(
@@ -78,6 +79,17 @@ impl StdioConnection {
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout for server '{}'", config.name))?;
+
+        // Drain stderr asynchronously to prevent OS pipe buffer exhaustion deadlocks
+        if let Some(stderr) = child.stderr.take() {
+            let stderr_server_name = config.name.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    debug!(target: "gateway_child_stderr", server = %stderr_server_name, "{}", line);
+                }
+            });
+        }
 
         let writer = AsyncMutex::new(BufWriter::new(stdin));
         let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<PendingResult>>>> =
@@ -207,25 +219,20 @@ impl StdioConnection {
         let mut request_line = serde_json::to_string(&request)?;
         request_line.push('\n');
 
-        // Write to stdin with write lock
-        {
+        // Write to stdin with write lock protected by timeout
+        let write_fut = async {
             let mut writer = self.writer.lock().await;
-            if let Err(e) = writer.write_all(request_line.as_bytes()).await {
-                self.remove_pending(id);
-                return Err(anyhow::anyhow!(
-                    "Failed to write to stdin of '{}': {}",
-                    self.server_name,
-                    e
-                ));
-            }
-            if let Err(e) = writer.flush().await {
-                self.remove_pending(id);
-                return Err(anyhow::anyhow!(
-                    "Failed to flush stdin of '{}': {}",
-                    self.server_name,
-                    e
-                ));
-            }
+            writer.write_all(request_line.as_bytes()).await?;
+            writer.flush().await?;
+            Ok::<(), std::io::Error>(())
+        };
+
+        if let Err(_) = tokio::time::timeout(Duration::from_secs(5), write_fut).await {
+            self.remove_pending(id);
+            return Err(anyhow::anyhow!(
+                "Timed out writing to stdin of '{}' (child process may be unresponsive)",
+                self.server_name
+            ));
         }
 
         debug!("📤 [{}] → {} (id={})", self.server_name, method, id);

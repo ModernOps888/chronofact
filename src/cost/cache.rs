@@ -1,6 +1,7 @@
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,7 @@ struct CacheEntry {
     value: Value,
     inserted_at: Instant,
     ttl: Duration,
-    hits: u64,
+    hits: AtomicU64,
 }
 
 impl CacheEntry {
@@ -21,8 +22,8 @@ pub struct ToolResponseCache {
     entries: RwLock<HashMap<String, CacheEntry>>,
     default_ttl: Duration,
     max_entries: usize,
-    total_hits: RwLock<u64>,
-    total_misses: RwLock<u64>,
+    total_hits: AtomicU64,
+    total_misses: AtomicU64,
 }
 
 impl Default for ToolResponseCache {
@@ -37,8 +38,8 @@ impl ToolResponseCache {
             entries: RwLock::new(HashMap::new()),
             default_ttl: Duration::from_secs(ttl_seconds),
             max_entries,
-            total_hits: RwLock::new(0),
-            total_misses: RwLock::new(0),
+            total_hits: AtomicU64::new(0),
+            total_misses: AtomicU64::new(0),
         }
     }
 
@@ -46,7 +47,14 @@ impl ToolResponseCache {
         let mut hasher = Sha256::new();
         hasher.update(tool_name.as_bytes());
         hasher.update(b":");
-        let arg_str = serde_json::to_string(arguments).unwrap_or_default();
+        let arg_str = match arguments {
+            Value::Object(map) => {
+                let mut sorted: Vec<(&String, &Value)> = map.iter().collect();
+                sorted.sort_by_key(|(k, _)| *k);
+                serde_json::to_string(&sorted).unwrap_or_default()
+            }
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
         hasher.update(arg_str.as_bytes());
         format!("{:x}", hasher.finalize())
     }
@@ -54,23 +62,17 @@ impl ToolResponseCache {
     pub fn get(&self, tool_name: &str, arguments: &Value) -> Option<Value> {
         let key = Self::compute_key(tool_name, arguments);
 
-        if let Ok(mut entries) = self.entries.write() {
-            if let Some(entry) = entries.get_mut(&key) {
+        if let Ok(entries) = self.entries.read() {
+            if let Some(entry) = entries.get(&key) {
                 if !entry.is_expired() {
-                    entry.hits += 1;
-                    if let Ok(mut hits) = self.total_hits.write() {
-                        *hits += 1;
-                    }
+                    entry.hits.fetch_add(1, Ordering::Relaxed);
+                    self.total_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(entry.value.clone());
-                } else {
-                    entries.remove(&key);
                 }
             }
         }
 
-        if let Ok(mut misses) = self.total_misses.write() {
-            *misses += 1;
-        }
+        self.total_misses.fetch_add(1, Ordering::Relaxed);
         None
     }
 
@@ -107,15 +109,15 @@ impl ToolResponseCache {
                     value,
                     inserted_at: Instant::now(),
                     ttl: self.default_ttl,
-                    hits: 0,
+                    hits: AtomicU64::new(0),
                 },
             );
         }
     }
 
     pub fn stats(&self) -> (u64, u64, usize, f32) {
-        let hits = self.total_hits.read().map(|h| *h).unwrap_or(0);
-        let misses = self.total_misses.read().map(|m| *m).unwrap_or(0);
+        let hits = self.total_hits.load(Ordering::Relaxed);
+        let misses = self.total_misses.load(Ordering::Relaxed);
         let count = self.entries.read().map(|e| e.len()).unwrap_or(0);
         let total = hits + misses;
         let hit_rate = if total > 0 {

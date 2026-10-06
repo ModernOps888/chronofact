@@ -142,20 +142,33 @@ impl FactVerifier {
 
         // Configurable Policy Invariant Rule 4: Astra 6 & Sol 6.1 Vendor Misattribution
         if (statement_lower.contains("astra") || statement_lower.contains("sol 6") || statement_lower.contains("astr 6") || statement_lower.contains("sol-6"))
-            && (statement_lower.contains("google") || statement_lower.contains("deepmind"))
+            && (statement_lower.contains("google") || statement_lower.contains("deepmind") || statement_lower.contains("anthropic") || statement_lower.contains("meta") || statement_lower.contains("xai"))
         {
             return (
                 VerificationStatus::Contradicted,
                 0.01,
                 vec!["policy_invariant_rule".to_string()],
-                "POLICY CONTRADICTION: Astra 6 (GPT-6 Astra, Sep 3, 2026) and Sol 6.1 (GPT-6.1 Sol, Sep 29, 2026) are policy-registered frontier models developed and deployed by OpenAI, NOT Google or Google DeepMind.".to_string(),
+                "POLICY CONTRADICTION: Astra 6 (GPT-6 Astra, Sep 3, 2026) and Sol 6.1 (GPT-6.1 Sol, Sep 29, 2026) are policy-registered frontier models developed and deployed by OpenAI, NOT Google, DeepMind, Anthropic, Meta, or xAI.".to_string(),
             );
         }
 
         // Configurable Policy Invariant Rule 5: OpenAI Astra / Sol Correct Ownership
-        if (statement_lower.contains("astra") || statement_lower.contains("sol 6") || statement_lower.contains("astr 6"))
+        if (statement_lower.contains("astra") || statement_lower.contains("sol 6") || statement_lower.contains("astr 6") || statement_lower.contains("sol-6"))
             && (statement_lower.contains("openai") || statement_lower.contains("gpt-6") || statement_lower.contains("gpt 6"))
         {
+            let has_negation = ["not ", "never", "denies", "isn't", "isnt", "didn't", "didnt", "no longer", "refutes", "disowns"]
+                .iter()
+                .any(|neg| statement_lower.contains(neg));
+
+            if has_negation {
+                return (
+                    VerificationStatus::Contradicted,
+                    0.02,
+                    vec!["policy_invariant_rule".to_string()],
+                    "POLICY CONTRADICTION: Denying OpenAI ownership of GPT-6 Astra or Sol 6.1 contradicts registered policy ground truth.".to_string(),
+                );
+            }
+
             return (
                 VerificationStatus::Entailed,
                 0.99,

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CostMetricsSummary {
@@ -16,9 +16,9 @@ pub struct CostMetricsSummary {
 }
 
 pub struct CostTracker {
-    total_queries: RwLock<u64>,
-    total_pruned_tools: RwLock<u64>,
-    total_tokens_saved: RwLock<u64>,
+    total_queries: AtomicU64,
+    total_pruned_tools: AtomicU64,
+    total_tokens_saved: AtomicU64,
     // Input cost benchmark: $3.00 per 1M tokens ($0.000003/token)
     input_price_per_token: f64,
 }
@@ -32,23 +32,17 @@ impl Default for CostTracker {
 impl CostTracker {
     pub fn new(input_price_per_token: f64) -> Self {
         Self {
-            total_queries: RwLock::new(0),
-            total_pruned_tools: RwLock::new(0),
-            total_tokens_saved: RwLock::new(0),
+            total_queries: AtomicU64::new(0),
+            total_pruned_tools: AtomicU64::new(0),
+            total_tokens_saved: AtomicU64::new(0),
             input_price_per_token,
         }
     }
 
     pub fn record_savings(&self, pruned_count: usize, tokens_saved: usize) {
-        if let Ok(mut q) = self.total_queries.write() {
-            *q += 1;
-        }
-        if let Ok(mut p) = self.total_pruned_tools.write() {
-            *p += pruned_count as u64;
-        }
-        if let Ok(mut s) = self.total_tokens_saved.write() {
-            *s += tokens_saved as u64;
-        }
+        self.total_queries.fetch_add(1, Ordering::Relaxed);
+        self.total_pruned_tools.fetch_add(pruned_count as u64, Ordering::Relaxed);
+        self.total_tokens_saved.fetch_add(tokens_saved as u64, Ordering::Relaxed);
     }
 
     pub fn get_metrics(&self, cache_hits: u64, cache_misses: u64, active_cache_entries: usize) -> CostMetricsSummary {
@@ -63,9 +57,9 @@ impl CostTracker {
         active_cache_entries: usize,
     ) -> CostMetricsSummary {
         let (db_queries, db_pruned, db_saved_tokens, db_usd) = db_totals;
-        let mem_queries = self.total_queries.read().map(|q| *q).unwrap_or(0);
-        let mem_pruned = self.total_pruned_tools.read().map(|p| *p).unwrap_or(0);
-        let mem_saved = self.total_tokens_saved.read().map(|s| *s).unwrap_or(0);
+        let mem_queries = self.total_queries.load(Ordering::Relaxed);
+        let mem_pruned = self.total_pruned_tools.load(Ordering::Relaxed);
+        let mem_saved = self.total_tokens_saved.load(Ordering::Relaxed);
 
         let queries = db_queries.max(mem_queries);
         let pruned = db_pruned.max(mem_pruned);
@@ -108,7 +102,7 @@ impl CostTracker {
     pub fn generate_cache_aligned_prefix(project_id: &str) -> String {
         format!(
             "<prompt_cache_anchor project=\"{}\" tier=\"L3_INVARIANT_STATIC\">\n\
-            CHRONOFACT_EPIDEMIOLOGY_VERSION: 1.0.0\n\
+            CHRONOFACT_EPISTEMIC_VERSION: 1.0.0\n\
             CACHE_COMPATIBILITY: ANTHROPIC_EPHEMERAL_5MIN_V1\n\
             INVARIANT_BLOCK: IMMUTABLE\n\
             </prompt_cache_anchor>\n",

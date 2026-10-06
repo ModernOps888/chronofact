@@ -87,11 +87,13 @@ Because the engine autonomously interacts with live web search engines, untruste
 * **Audit Proof**: Tested with classic SQL injection payload `'; DROP TABLE project_entities; --`. The payload was stored safely as a literal string parameter without altering table structure or schema integrity.
 
 ### 3.4 Command & Process Injection
-* **Risk**: Arbitrary OS command execution via unsanitized arguments.
+* **Risk**: Arbitrary OS command execution via unsanitized parameters or dynamic server registration.
 * **Implementation**:
-  * The ChronoFact Rust engine makes **zero use** of `std::process::Command` for external query execution or shell spawning.
-  * All networking is performed via memory-safe native async Rust HTTP primitives (`reqwest`).
-  * No shell interpreter (`cmd.exe`, `powershell.exe`, `/bin/sh`) is invoked.
+  * Stdio MCP upstream server child processes are spawned strictly via `tokio::process::Command` from static, admin-configured server configs (e.g. `chronofact.toml`).
+  * Dynamic stdio process execution via the public HTTP API (`POST /api/gateway/servers`) is strictly forbidden (HTTP 403 Forbidden).
+  * Child processes configure `kill_on_drop(true)` with non-blocking asynchronous stderr drain loops (`AsyncBufReadExt::lines()`) to prevent zombie processes and OS pipe buffer deadlocks.
+  * Zero shell interpreters (`cmd.exe`, `powershell.exe`, `/bin/sh`) are invoked by the web query, search, or grounding pipelines.
+* **Audit Proof**: Tested against dynamic stdio process injection in `tests/production_audit_regression_tests.rs`. Remote command registration attempts rejected with HTTP 403.
 
 ### 3.5 Path Traversal & Filesystem Sandbox (`src/security/validator.rs`)
 * **Risk**: User-specified database paths or export artifacts attempting to escape the workspace root via `../../`.

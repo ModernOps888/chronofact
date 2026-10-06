@@ -2,7 +2,7 @@
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 38/38 Passed](https://github.com/ModernOps888/chronofact/actions/workflows/ci.yml/badge.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 50/50 Passed](https://github.com/ModernOps888/chronofact/actions/workflows/ci.yml/badge.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 
@@ -42,7 +42,7 @@ Large Language Models deployed in agentic environments suffer from four critical
                    [Pillar 3: Zero-Pollution Memory]
                    L1: Sliding conversation buffer
                    L2: Structured episodic session ledger
-                   L3: Semantic Truth Dossier (Cosine Gated ≥ 0.72)
+                   L3: Semantic Truth Dossier (Relevance Gated)
                                       │
                                       ▼
                        VERIFIED, COST-OPTIMIZED OUTPUT
@@ -74,17 +74,17 @@ Large Language Models deployed in agentic environments suffer from four critical
 * **L2 (Episodic Session Ledger)**: SQLite database (`chronofact_memory.db`) running in Write-Ahead Logging (WAL) mode with `PRAGMA busy_timeout=5000;`. Stores immutable session turns and live drift audit logs.
 * **L3 (Semantic Truth Dossier)**: Persistent project invariants (tech stack choices, database schemas, architectural rules).
 * **The Zero-Pollution Guard**:
-  - Queries are evaluated using token-overlap and cosine similarity against stored memories.
-  - **Invariant**: If the user asks about an unrelated topic (e.g. quantum physics in an e-commerce project), the similarity score falls below the `0.72` threshold, and **exactly 0 memory tokens are injected**, preventing cross-domain degradation.
+  - Queries are evaluated using token-overlap and keyword relevance gating against stored memories.
+  - **Invariant**: If the user asks about an unrelated topic (e.g. quantum physics in an e-commerce project), the query does not match project entity tokens, and **exactly 0 memory tokens are injected**, preventing cross-domain degradation.
 
 ### ✂️ Pillar 4: Token Context Bloat & Cost Bleed Prevention (mcplex Technology)
 * **TF-IDF Tool Router**:
-  - Agents often register 20–50 MCP tools, consuming 3,000–8,000 prompt tokens per turn just for tool schemas.
+  - Agents often register 20-50 MCP tools, consuming 3,000-8,000 prompt tokens per turn just for tool schemas.
   - ChronoFact tokenizes the user query into unigrams, computes TF-IDF vectors, and calculates cosine similarity against registered tool signatures.
-  - Prunes irrelevant schemas down to `top_k` (typically 3–4 tools), achieving **70%–91% token savings per turn**.
+  - Prunes irrelevant schemas down to `top_k` (typically 3-4 tools), achieving **70%-91% token savings per turn**.
 * **Deterministic Prompt Cache Prefix Alignment**:
   - Formats static system instructions, immutable invariant anchors (`[CHRONOFACT_CACHE_ANCHOR:v1:...]`), and stable tool schemas into the exact prefix of the prompt.
-  - Hits Anthropic 5-minute rolling prompt caches and OpenAI 1024-token prompt caches, reducing input API costs by 50%–80%.
+  - Hits Anthropic 5-minute rolling prompt caches and OpenAI 1024-token prompt caches, reducing input API costs by 50%-80%.
 * **Idempotent Tool Response Cache**:
   - Caches deterministic tool invocations (repeated file inspections, static documentation fetches) indexed by `SHA-256(tool_name + args)`.
   - Hits return instantly (0ms) with zero downstream LLM tokens consumed.
@@ -179,7 +179,7 @@ The frontend is a dark-mode, obsidian and imperial gold telemetry dashboard buil
 
 | Metric / Benchmark | Result | Verification Proof |
 |:---|:---:|:---|
-| **Rust Unit & Integration Tests** | **38 / 38 PASSING** | `cargo test` (8 test suites, 0 warnings, 0 failures) |
+| **Rust Unit & Integration Tests** | **50 / 50 PASSING** | `cargo test` (10 test suites, 0 warnings, 0 failures) |
 | **Adversarial Prompt Stress Suite** | **12 / 12 PASSING** | `scripts/test_prompts_live.ps1` & `tests/adversarial_prompt_stress.rs` |
 | **CI Automation** | **GitHub Actions** | Automated build & test on push/PR (`.github/workflows/ci.yml`) |
 | **Gateway Multiplexing Throughput** | **1,333,333 ops/sec** | P50: 300ns (Verified in `stress_test_scenario_1`) |

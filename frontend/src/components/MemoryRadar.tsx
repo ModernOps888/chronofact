@@ -76,7 +76,7 @@ export const MemoryRadar: React.FC<Props> = ({
     setIsSimulating(true);
     try {
       const res = await fetch(
-        `http://127.0.0.1:3030/api/memory/dossier/${projectId}?query=${encodeURIComponent(queryToTest)}`
+        `/api/memory/dossier/${projectId}?query=${encodeURIComponent(queryToTest)}`
       );
       if (res.ok) {
         const data: ProjectDossier = await res.json();

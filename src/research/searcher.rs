@@ -21,6 +21,7 @@ impl SearchEngine {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) ChronoFact/0.1.0")
             .build()
             .unwrap_or_default();

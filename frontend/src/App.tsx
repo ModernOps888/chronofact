@@ -23,10 +23,6 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     fetchInitialData();
-    const interval = setInterval(() => {
-      fetchDriftEvents();
-    }, 2000);
-    return () => clearInterval(interval);
   }, [projectId]);
 
   const fetchInitialData = async () => {
@@ -206,13 +202,17 @@ export const App: React.FC = () => {
               </select>
             </div>
 
-            <div className="flex items-center gap-2 bg-[#101626] border border-emerald-500/30 px-3.5 py-2 rounded-xl shadow-sm">
+            <div className={`flex items-center gap-2 bg-[#101626] border px-3.5 py-2 rounded-xl shadow-sm ${
+              serverOnline ? 'border-emerald-500/30' : 'border-rose-500/40'
+            }`}>
               <span
                 className={`w-2.5 h-2.5 rounded-full ${
                   serverOnline ? 'bg-emerald-400 shadow-[0_0_10px_#10b981] animate-pulse' : 'bg-rose-500'
                 }`}
               />
-              <span className="text-xs font-mono text-emerald-300 font-semibold">
+              <span className={`text-xs font-mono font-semibold ${
+                serverOnline ? 'text-emerald-300' : 'text-rose-300'
+              }`}>
                 {serverOnline ? 'Core 127.0.0.1:3030' : 'Offline'}
               </span>
             </div>

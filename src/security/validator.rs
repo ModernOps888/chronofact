@@ -30,7 +30,8 @@ impl SecurityValidator {
         }
 
         // 2. Validate Host
-        let host_str = parsed.host_str().ok_or_else(|| SecurityError::InvalidUrl("Missing host".to_string()))?;
+        let host_raw = parsed.host_str().ok_or_else(|| SecurityError::InvalidUrl("Missing host".to_string()))?;
+        let host_str = host_raw.trim_end_matches('.');
 
         // Fast-path block for obvious localhost strings
         let lower_host = host_str.to_lowercase();
@@ -54,7 +55,7 @@ impl SecurityValidator {
         Ok(parsed)
     }
 
-    /// Checks if an IP is loopback, link-local, private, or multicast
+    /// Checks if an IP is loopback, link-local, private, CGNAT, or multicast
     pub fn is_private_or_restricted_ip(ip: IpAddr) -> bool {
         match ip {
             IpAddr::V4(v4) => {
@@ -69,6 +70,8 @@ impl SecurityValidator {
                 if octets[0] == 192 && octets[1] == 168 { return true; }
                 // 169.254.0.0/16 (Link Local / Cloud Metadata 169.254.169.254)
                 if octets[0] == 169 && octets[1] == 254 { return true; }
+                // 100.64.0.0/10 (Carrier-Grade NAT)
+                if octets[0] == 100 && (64..=127).contains(&octets[1]) { return true; }
                 // 0.0.0.0/8
                 if octets[0] == 0 { return true; }
                 // 224.0.0.0/4 (Multicast)
@@ -83,13 +86,28 @@ impl SecurityValidator {
                 if let Some(v4) = v6.to_ipv4_mapped() {
                     return Self::is_private_or_restricted_ip(IpAddr::V4(v4));
                 }
+                let segs = v6.segments();
+                // Check IPv4-compatible IPv6 (::x.x.x.x where first 96 bits are 0)
+                if segs[0] == 0 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0 && segs[4] == 0 && segs[5] == 0 {
+                    let v4 = std::net::Ipv4Addr::new(
+                        (segs[6] >> 8) as u8,
+                        segs[6] as u8,
+                        (segs[7] >> 8) as u8,
+                        segs[7] as u8,
+                    );
+                    return Self::is_private_or_restricted_ip(IpAddr::V4(v4));
+                }
                 // Check IPv6 Unique Local addresses (fc00::/7)
-                let seg0 = v6.segments()[0];
+                let seg0 = segs[0];
                 if (seg0 & 0xfe00) == 0xfc00 {
                     return true;
                 }
                 // Check IPv6 Link-Local unicast (fe80::/10)
                 if (seg0 & 0xffc0) == 0xfe80 {
+                    return true;
+                }
+                // Check IPv6 Multicast (ff00::/8)
+                if (seg0 & 0xff00) == 0xff00 {
                     return true;
                 }
                 false

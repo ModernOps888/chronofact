@@ -88,6 +88,12 @@ impl EpisodicLedger {
             [],
         )?;
 
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
+             CREATE INDEX IF NOT EXISTS idx_drift_events_project ON drift_events(project_id);
+             CREATE INDEX IF NOT EXISTS idx_cost_events_ts ON cost_events(timestamp);",
+        )?;
+
         Ok(())
     }
 
@@ -108,6 +114,12 @@ impl EpisodicLedger {
         context_diff: Option<&str>,
     ) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
+        // Auto-create parent session row so that INNER JOIN in get_recent_events_for_project resolves
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (session_id, project_id, created_at, summary)
+             VALUES (?1, 'antigravity-ide', ?2, 'Auto-registered session');",
+            params![session_id, now],
+        )?;
         conn.execute(
             "INSERT INTO session_events (session_id, timestamp, event_type, description, context_diff)
              VALUES (?1, ?2, ?3, ?4, ?5);",

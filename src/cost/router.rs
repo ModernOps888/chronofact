@@ -187,7 +187,7 @@ impl TfidfToolRouter {
 }
 
 fn tokenize(text: &str) -> Vec<String> {
-    let stopwords: HashSet<&str> = [
+    const STOPWORDS: &[&str] = &[
         "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
         "do", "does", "did", "will", "would", "could", "should", "can", "to", "of", "in", "for",
         "on", "with", "at", "by", "from", "as", "into", "through", "during", "before", "after",
@@ -196,13 +196,11 @@ fn tokenize(text: &str) -> Vec<String> {
         "more", "most", "other", "some", "such", "no", "not", "only", "own", "same", "so",
         "than", "too", "very", "just", "or", "and", "but", "if", "this", "that", "these",
         "those", "it", "its", "please", "me", "my", "we", "our", "you", "your",
-    ]
-    .into_iter()
-    .collect();
+    ];
 
     text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|s| s.len() > 1 && !stopwords.contains(s))
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| s.len() > 1 && !STOPWORDS.contains(s))
         .map(|s| s.to_string())
         .collect()
 }

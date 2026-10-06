@@ -22,10 +22,109 @@ pub struct UpstreamServer {
     pub connected: bool,
 }
 
+#[derive(Clone)]
+pub enum ToolExecutionTarget {
+    Http {
+        server_name: String,
+        url: String,
+        config: UpstreamServerConfig,
+        bare_name: String,
+        arguments: Option<serde_json::Value>,
+        client: reqwest::Client,
+        session_id: Option<String>,
+    },
+    Stdio {
+        conn: Arc<StdioConnection>,
+        bare_name: String,
+        arguments: Option<serde_json::Value>,
+    },
+}
+
+impl ToolExecutionTarget {
+    pub async fn execute(self) -> anyhow::Result<serde_json::Value> {
+        match self {
+            ToolExecutionTarget::Http {
+                server_name: _,
+                url,
+                config,
+                bare_name,
+                arguments,
+                client,
+                session_id,
+            } => {
+                let req_body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": bare_name,
+                        "arguments": arguments,
+                    }
+                });
+
+                let mut builder = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream");
+
+                if let Some(ref sid) = session_id {
+                    builder = builder.header("Mcp-Session-Id", sid);
+                }
+
+                if let Some(ref headers) = config.headers {
+                    for (k, v) in headers {
+                        builder = builder.header(k, v);
+                    }
+                }
+
+                let resp = builder.json(&req_body).send().await?;
+                let status = resp.status();
+                let content_type = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let body_text = resp.text().await?;
+
+                if !status.is_success() {
+                    return Err(anyhow::anyhow!(
+                        "Upstream HTTP server returned status {}: {}",
+                        status,
+                        body_text
+                    ));
+                }
+
+                let body = GatewayMultiplexer::parse_mcp_response(content_type.as_deref(), &body_text)?;
+                if let Some(res) = body.get("result") {
+                    Ok(res.clone())
+                } else if let Some(err) = body.get("error") {
+                    Err(anyhow::anyhow!("Upstream error: {}", err))
+                } else {
+                    Err(anyhow::anyhow!("Invalid response from upstream HTTP server: {}", body))
+                }
+            }
+            ToolExecutionTarget::Stdio {
+                conn,
+                bare_name,
+                arguments,
+            } => {
+                conn.send_request(
+                    "tools/call",
+                    serde_json::json!({
+                        "name": bare_name,
+                        "arguments": arguments,
+                    }),
+                )
+                .await
+            }
+        }
+    }
+}
+
 /// The GatewayMultiplexer manages connections, indexing, and routing across multiple MCP servers
 pub struct GatewayMultiplexer {
     servers: HashMap<String, UpstreamServer>,
-    stdio_connections: HashMap<String, StdioConnection>,
+    stdio_connections: HashMap<String, Arc<StdioConnection>>,
     /// tool_name or server/tool_name -> server_name
     tool_index: HashMap<String, String>,
     /// resource_uri or server/resource_uri -> server_name
@@ -49,7 +148,8 @@ impl GatewayMultiplexer {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(4)
+            .pool_max_idle_per_host(64)
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
 
         let mut multiplexer = Self {
@@ -204,12 +304,12 @@ impl GatewayMultiplexer {
         tool_count
     }
 
-    /// Dispatches a tool call to the owning upstream server
-    pub async fn call_tool(
+    /// Resolves tool execution target under ephemeral lock to avoid holding RwLock across network awaits
+    pub fn resolve_tool_execution(
         &self,
         name_or_fqn: &str,
         arguments: Option<serde_json::Value>,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<ToolExecutionTarget> {
         let server_name = self
             .tool_index
             .get(name_or_fqn)
@@ -224,47 +324,42 @@ impl GatewayMultiplexer {
             return Err(anyhow::anyhow!("Server '{}' is not connected", server_name));
         }
 
-        // Determine bare tool name if FQN was used
         let bare_name = if let Some((_, bare)) = name_or_fqn.split_once('/') {
-            bare
+            bare.to_string()
         } else {
-            name_or_fqn
+            name_or_fqn.to_string()
         };
 
         if let Some(ref url) = server.config.url {
-            // HTTP transport call
-            let req_body = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": bare_name,
-                    "arguments": arguments,
-                }
-            });
-
-            let body = self.send_mcp_http_request(server_name, url, &server.config, &req_body).await?;
-
-            if let Some(res) = body.get("result") {
-                Ok(res.clone())
-            } else if let Some(err) = body.get("error") {
-                Err(anyhow::anyhow!("Upstream error: {}", err))
-            } else {
-                Err(anyhow::anyhow!("Invalid response from upstream HTTP server: {}", body))
-            }
+            let session_id = self.get_http_session_id(server_name);
+            Ok(ToolExecutionTarget::Http {
+                server_name: server_name.clone(),
+                url: url.clone(),
+                config: server.config.clone(),
+                bare_name,
+                arguments,
+                client: self.http_client.clone(),
+                session_id,
+            })
         } else if let Some(conn) = self.stdio_connections.get(server_name) {
-            // Stdio transport call
-            conn.send_request(
-                "tools/call",
-                serde_json::json!({
-                    "name": bare_name,
-                    "arguments": arguments,
-                }),
-            )
-            .await
+            Ok(ToolExecutionTarget::Stdio {
+                conn: conn.clone(),
+                bare_name,
+                arguments,
+            })
         } else {
             Err(anyhow::anyhow!("No active transport connection for '{}'", server_name))
         }
+    }
+
+    /// Dispatches a tool call to the owning upstream server
+    pub async fn call_tool(
+        &self,
+        name_or_fqn: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let target = self.resolve_tool_execution(name_or_fqn, arguments)?;
+        target.execute().await
     }
 
     /// Read an upstream resource
@@ -399,7 +494,7 @@ impl GatewayMultiplexer {
                     Vec::new()
                 };
 
-                self.stdio_connections.insert(config.name.clone(), conn);
+                self.stdio_connections.insert(config.name.clone(), Arc::new(conn));
                 (tools, resources, prompts, true)
             }
             Err(e) => {

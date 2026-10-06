@@ -188,20 +188,28 @@ impl McpServer {
                     requested_model_id
                 } else if let Some(flagged) = scan.outdated_models_flagged.first() {
                     let f_lower = flagged.to_lowercase();
-                    if f_lower.contains("3.5") {
+                    if f_lower.contains("3.5") || f_lower.contains("3-5") {
                         "claude-3-5-sonnet"
-                    } else if f_lower.contains("3.7") {
+                    } else if f_lower.contains("3.7") || f_lower.contains("3-7") {
                         "claude-3-7-sonnet"
                     } else if f_lower.contains("grok") {
                         "grok-3"
-                    } else if f_lower.contains("gpt-4") {
+                    } else if f_lower.contains("gpt-4") || f_lower.contains("gpt 4") {
                         "gpt-4"
                     } else {
                         "claude-opus-5-5"
                     }
                 } else {
                     let q_lower = query.to_lowercase();
-                    if q_lower.contains("astra") || q_lower.contains("astr-6") || q_lower.contains("astr 6") {
+                    if q_lower.contains("claude-3-5") || q_lower.contains("claude 3.5") || q_lower.contains("sonnet 3.5") || q_lower.contains("sonnet-3-5") {
+                        "claude-3-5-sonnet"
+                    } else if q_lower.contains("claude-3-7") || q_lower.contains("claude 3.7") || q_lower.contains("sonnet 3.7") || q_lower.contains("sonnet-3-7") {
+                        "claude-3-7-sonnet"
+                    } else if q_lower.contains("grok-3") || q_lower.contains("grok 3") {
+                        "grok-3"
+                    } else if q_lower.contains("gpt-4") || q_lower.contains("gpt 4") {
+                        "gpt-4"
+                    } else if q_lower.contains("astra") || q_lower.contains("astr-6") || q_lower.contains("astr 6") {
                         "gpt-6-astra"
                     } else if q_lower.contains("sol-6") || q_lower.contains("sol 6") || q_lower.contains("sol-6.1") || q_lower.contains("sol 6.1") {
                         "gpt-6-1-sol"
@@ -556,11 +564,14 @@ impl McpServer {
             }));
         }
 
-        // 3. Dispatch to Upstream Server
-        let gw_guard = gw.read().await;
-        let upstream_result = gw_guard.call_tool(name, Some(args.clone())).await
+        // 3. Dispatch to Upstream Server (resolve target under ephemeral lock to avoid holding RwLock across network await)
+        let target = {
+            let gw_guard = gw.read().await;
+            gw_guard.resolve_tool_execution(name, Some(args.clone()))
+                .map_err(|e| format!("Failed to route tool '{}': {}", name, e))?
+        };
+        let upstream_result = target.execute().await
             .map_err(|e| format!("Upstream tool execution error: {}", e))?;
-        drop(gw_guard);
 
         // 4. Outbound Cognitive Epistemic Verification (Deterministic Lexical & Invariant Check)
         let verification_info = if verify_output {
