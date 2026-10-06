@@ -2,7 +2,7 @@
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 30/30 Passed](https://github.com/ModernOps888/chronofact/actions/workflows/ci.yml/badge.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 38/38 Passed](https://github.com/ModernOps888/chronofact/actions/workflows/ci.yml/badge.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 
@@ -179,10 +179,12 @@ The frontend is a dark-mode, obsidian and imperial gold telemetry dashboard buil
 
 | Metric / Benchmark | Result | Verification Proof |
 |:---|:---:|:---|
-| **Rust Unit & Integration Tests** | **30 / 30 PASSING** | `cargo test` (7 test suites, 0 warnings, 0 failures) |
+| **Rust Unit & Integration Tests** | **38 / 38 PASSING** | `cargo test` (8 test suites, 0 warnings, 0 failures) |
+| **Adversarial Prompt Stress Suite** | **12 / 12 PASSING** | `scripts/test_prompts_live.ps1` & `tests/adversarial_prompt_stress.rs` |
 | **CI Automation** | **GitHub Actions** | Automated build & test on push/PR (`.github/workflows/ci.yml`) |
 | **Gateway Multiplexing Throughput** | **1,333,333 ops/sec** | P50: 300ns (Verified in `stress_test_scenario_1`) |
 | **TF-IDF Schema Pruning Ratio (50 Tools)** | **92.0% Token Reduction** | 9,000 tokens pruned to 720 tokens (46 tools pruned) |
+| **TF-IDF Schema Pruning Ratio (15 Tools)** | **86.7% Token Reduction** | 13 tools pruned, 2 retained on targeted queries |
 | **Adversarial Security Interception** | **100.0% Blocked** | 1,000 / 1,000 prompt injection vectors blocked (0.75 µs/check) |
 | **Claim Verification Latency** | **0.13 ms / claim set** | 7,425 claim sets/sec throughput (sub-millisecond execution) |
 | **Tool Response Cache Hit Latency** | **16.14 µs** | 61,952 ops/sec in-memory SHA-256 lookup |
