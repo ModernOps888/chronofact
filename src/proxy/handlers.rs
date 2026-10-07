@@ -438,13 +438,20 @@ pub async fn call_gateway_tool(
         }
     }
 
-    let is_read_only = {
+    let (is_read_only, canonical_name) = {
         let gw_guard = gw.read().await;
-        gw_guard.get_tool_definition(&payload.name).map(|t| t.is_read_only()).unwrap_or(false)
+        let ro = gw_guard.get_tool_definition(&payload.name).map(|t| t.is_read_only()).unwrap_or(false);
+        let canonical = if let Some(server) = gw_guard.find_tool_server(&payload.name) {
+            let bare = payload.name.split_once('/').map(|(_, b)| b).unwrap_or(&payload.name);
+            format!("{}/{}", server, bare)
+        } else {
+            payload.name.clone()
+        };
+        (ro, canonical)
     };
 
     if is_read_only {
-        if let Some(cached) = state.tool_cache.get(&payload.name, &args_val) {
+        if let Some(cached) = state.tool_cache.get(&canonical_name, &args_val) {
             if is_passthrough {
                 return Ok((StatusCode::OK, Json(cached)));
             } else {
@@ -478,7 +485,7 @@ pub async fn call_gateway_tool(
     };
 
     if is_read_only {
-        state.tool_cache.put(&payload.name, &args_val, result.clone());
+        state.tool_cache.put(&canonical_name, &args_val, result.clone());
     }
 
     if is_passthrough {

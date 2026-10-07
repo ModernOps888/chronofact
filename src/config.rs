@@ -194,37 +194,59 @@ impl Config {
         Ok(list)
     }
 
-    /// Expands environment variables in ${VAR} or ${VAR:-default} format
+    /// Expands environment variables in ${VAR}, ${VAR:-default}, or $VAR format
     pub fn expand_env_vars(input: &str) -> String {
         let mut result = String::with_capacity(input.len());
         let mut chars = input.chars().peekable();
 
         while let Some(ch) = chars.next() {
-            if ch == '$' && chars.peek() == Some(&'{') {
-                chars.next(); // consume '{'
-                let mut var_expr = String::new();
-                let mut closed = false;
-                for c in chars.by_ref() {
-                    if c == '}' {
-                        closed = true;
-                        break;
+            if ch == '$' {
+                if chars.peek() == Some(&'{') {
+                    chars.next(); // consume '{'
+                    let mut var_expr = String::new();
+                    let mut closed = false;
+                    for c in chars.by_ref() {
+                        if c == '}' {
+                            closed = true;
+                            break;
+                        }
+                        var_expr.push(c);
                     }
-                    var_expr.push(c);
-                }
-                if closed {
-                    let (var_name, default_val) = match var_expr.split_once(":-") {
-                        Some((k, d)) => (k.trim(), Some(d)),
-                        None => (var_expr.trim(), None),
-                    };
-                    if let Ok(val) = env::var(var_name) {
+                    if closed {
+                        let (var_name, default_val) = match var_expr.split_once(":-") {
+                            Some((k, d)) => (k.trim(), Some(d)),
+                            None => (var_expr.trim(), None),
+                        };
+                        match env::var(var_name) {
+                            Ok(val) if !val.is_empty() => {
+                                result.push_str(&val);
+                            }
+                            _ => {
+                                if let Some(d) = default_val {
+                                    result.push_str(d);
+                                }
+                            }
+                        }
+                    } else {
+                        result.push('$');
+                        result.push('{');
+                        result.push_str(&var_expr);
+                    }
+                } else if chars.peek().map(|c| c.is_ascii_alphabetic() || *c == '_').unwrap_or(false) {
+                    let mut var_name = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            var_name.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(val) = env::var(&var_name) {
                         result.push_str(&val);
-                    } else if let Some(d) = default_val {
-                        result.push_str(d);
                     }
                 } else {
-                    result.push('$');
-                    result.push('{');
-                    result.push_str(&var_expr);
+                    result.push(ch);
                 }
             } else {
                 result.push(ch);

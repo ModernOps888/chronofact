@@ -805,3 +805,293 @@ async fn test_issue1_followup_point4_protocol_version_404_recovery_and_paginatio
     // Verify that session_counter incremented (session 0 on start, session 1 on recovery)
     assert_eq!(state.session_counter.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn test_issue1_followup_canonical_cache_key_bare_and_fqn() {
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use axum::Json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct CanonicalCacheState {
+        call_count: Arc<AtomicUsize>,
+    }
+
+    let state = CanonicalCacheState {
+        call_count: Arc::new(AtomicUsize::new(0)),
+    };
+
+    let router = axum::Router::new().route(
+        "/mcp",
+        post(
+            |State(st): State<CanonicalCacheState>, Json(body): Json<serde_json::Value>| async move {
+                let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                match method {
+                    "initialize" => (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": body.get("id"),
+                            "result": {
+                                "protocolVersion": "2025-03-26",
+                                "capabilities": { "tools": {} },
+                                "serverInfo": { "name": "canonical-srv", "version": "1.0.0" }
+                            }
+                        }).to_string(),
+                    ).into_response(),
+                    "notifications/initialized" => StatusCode::OK.into_response(),
+                    "tools/list" => (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": body.get("id"),
+                            "result": {
+                                "tools": [
+                                    {
+                                        "name": "ro_data",
+                                        "description": "Read only data fetch",
+                                        "inputSchema": { "type": "object" },
+                                        "annotations": { "readOnlyHint": "true" }
+                                    }
+                                ]
+                            }
+                        }).to_string(),
+                    ).into_response(),
+                    "tools/call" => {
+                        st.call_count.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::OK,
+                            [("content-type", "application/json")],
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id"),
+                                "result": {
+                                    "content": [{ "type": "text", "text": "fresh-data" }]
+                                }
+                            }).to_string(),
+                        ).into_response()
+                    }
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            },
+        ),
+    ).with_state(state.clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server_url = format!("http://127.0.0.1:{}/mcp", port);
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let config = UpstreamServerConfig::http("canonical_srv", server_url);
+    let (gw_arc, _rx) = GatewayMultiplexer::new(&[config]).await.unwrap();
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("canonical_cache.db").to_str().unwrap().to_string();
+    let memory = Arc::new(MemoryEngine::open(&db_path).unwrap());
+    let server = McpServer::with_gateway(memory, Some(gw_arc));
+
+    let args = json!({ "query": "metrics" });
+
+    // Call 1: Call using bare name "ro_data"
+    let res1 = server.dispatch_upstream_tool("ro_data", &args, false, false).await.unwrap();
+    assert_eq!(res1["cache_hit"], false);
+    assert_eq!(state.call_count.load(Ordering::SeqCst), 1);
+
+    // Call 2: Call using FQN "canonical_srv/ro_data" with same args
+    let res2 = server.dispatch_upstream_tool("canonical_srv/ro_data", &args, false, false).await.unwrap();
+    assert_eq!(res2["cache_hit"], true, "FQN call must hit cache populated by bare name call");
+    assert_eq!(state.call_count.load(Ordering::SeqCst), 1, "Upstream server must not be invoked on cache hit");
+}
+
+#[test]
+fn test_issue1_followup_env_expansion_advanced_syntax() {
+    std::env::set_var("CHRONO_TEST_EMPTY", "");
+    std::env::set_var("CHRONO_TEST_SIMPLE", "expanded_simple");
+    std::env::set_var("CHRONO_TEST_PORT_NUM", "8443");
+
+    // Test 1: $VAR syntax without braces
+    let expanded1 = Config::expand_env_vars("https://api.domain.com:$CHRONO_TEST_PORT_NUM/path");
+    assert_eq!(expanded1, "https://api.domain.com:8443/path");
+
+    // Test 2: Multiple $VAR in one string
+    let expanded2 = Config::expand_env_vars("$CHRONO_TEST_SIMPLE/$CHRONO_TEST_PORT_NUM");
+    assert_eq!(expanded2, "expanded_simple/8443");
+
+    // Test 3: ${VAR:-default} when variable exists but is empty string
+    let expanded3 = Config::expand_env_vars("${CHRONO_TEST_EMPTY:-fallback_for_empty}");
+    assert_eq!(expanded3, "fallback_for_empty", "Empty env var must fall back to default value");
+
+    // Test 4: ${VAR:-default} when variable is unset
+    let expanded4 = Config::expand_env_vars("${CHRONO_COMPLETELY_UNSET_VAR:-default_val}");
+    assert_eq!(expanded4, "default_val");
+
+    std::env::remove_var("CHRONO_TEST_EMPTY");
+    std::env::remove_var("CHRONO_TEST_SIMPLE");
+    std::env::remove_var("CHRONO_TEST_PORT_NUM");
+}
+
+#[tokio::test]
+async fn test_issue1_followup_mcp_resources_and_prompts_multiplexing() {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use axum::Json;
+
+    let router = axum::Router::new().route(
+        "/mcp",
+        post(|Json(body): Json<serde_json::Value>| async move {
+            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            match method {
+                "initialize" => (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {
+                                "tools": {},
+                                "resources": {},
+                                "prompts": {}
+                            },
+                            "serverInfo": { "name": "res-prompt-srv", "version": "1.0.0" }
+                        }
+                    }).to_string(),
+                ).into_response(),
+                "notifications/initialized" => StatusCode::OK.into_response(),
+                "tools/list" => (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": { "tools": [] }
+                    }).to_string(),
+                ).into_response(),
+                "resources/list" => (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": {
+                            "resources": [
+                                {
+                                    "uri": "config://settings",
+                                    "name": "App Settings",
+                                    "mimeType": "application/json"
+                                }
+                            ]
+                        }
+                    }).to_string(),
+                ).into_response(),
+                "resources/read" => (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": {
+                            "contents": [
+                                { "uri": "config://settings", "text": "{\"mode\":\"production\"}" }
+                            ]
+                        }
+                    }).to_string(),
+                ).into_response(),
+                "prompts/list" => (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": {
+                            "prompts": [
+                                {
+                                    "name": "code_review",
+                                    "description": "Reviews code diff",
+                                    "arguments": []
+                                }
+                            ]
+                        }
+                    }).to_string(),
+                ).into_response(),
+                _ => StatusCode::NOT_FOUND.into_response(),
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server_url = format!("http://127.0.0.1:{}/mcp", port);
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let config = UpstreamServerConfig::http("res_srv", server_url);
+    let (gw_arc, _rx) = GatewayMultiplexer::new(&[config]).await.unwrap();
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("res_test.db").to_str().unwrap().to_string();
+    let memory = Arc::new(MemoryEngine::open(&db_path).unwrap());
+    let server = McpServer::with_gateway(memory, Some(gw_arc));
+
+    // 1. Verify initialize response advertises resources and prompts capabilities
+    let init_req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(1)),
+        method: "initialize".to_string(),
+        params: Some(json!({ "protocolVersion": "2025-03-26" })),
+    };
+    let init_resp = server.handle_request(init_req).await.unwrap();
+    let caps = init_resp.result.unwrap()["capabilities"].clone();
+    assert!(caps.get("tools").is_some());
+    assert!(caps.get("resources").is_some());
+    assert!(caps.get("prompts").is_some());
+
+    // 2. Verify resources/list
+    let res_list_req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(2)),
+        method: "resources/list".to_string(),
+        params: None,
+    };
+    let res_list_resp = server.handle_request(res_list_req).await.unwrap();
+    let resources = res_list_resp.result.unwrap()["resources"].as_array().unwrap().clone();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0]["uri"], "config://settings");
+    assert_eq!(resources[0]["server"], "res_srv");
+
+    // 3. Verify resources/read
+    let res_read_req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(3)),
+        method: "resources/read".to_string(),
+        params: Some(json!({ "uri": "config://settings" })),
+    };
+    let res_read_resp = server.handle_request(res_read_req).await.unwrap();
+    let contents = res_read_resp.result.unwrap()["contents"].as_array().unwrap().clone();
+    assert_eq!(contents[0]["text"], "{\"mode\":\"production\"}");
+
+    // 4. Verify prompts/list
+    let prompt_list_req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(4)),
+        method: "prompts/list".to_string(),
+        params: None,
+    };
+    let prompt_list_resp = server.handle_request(prompt_list_req).await.unwrap();
+    let prompts = prompt_list_resp.result.unwrap()["prompts"].as_array().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["name"], "code_review");
+    assert_eq!(prompts[0]["server"], "res_srv");
+}

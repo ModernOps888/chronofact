@@ -91,11 +91,16 @@ impl ToolDefinition {
     pub fn is_read_only(&self) -> bool {
         if let Some(ref ann) = self.annotations {
             if let Some(obj) = ann.as_object() {
-                if let Some(hint) = obj.get("readOnlyHint").and_then(|v| v.as_bool()) {
-                    return hint;
-                }
-                if let Some(ro) = obj.get("readOnly").and_then(|v| v.as_bool()) {
-                    return ro;
+                if let Some(val) = obj.get("readOnlyHint").or_else(|| obj.get("readOnly")) {
+                    if let Some(b) = val.as_bool() {
+                        return b;
+                    }
+                    if let Some(s) = val.as_str() {
+                        return s.eq_ignore_ascii_case("true") || s == "1";
+                    }
+                    if let Some(n) = val.as_i64() {
+                        return n == 1;
+                    }
                 }
             }
         }

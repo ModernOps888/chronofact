@@ -493,6 +493,16 @@ impl GatewayMultiplexer {
         self.all_tools.clone()
     }
 
+    /// Get all registered upstream resources
+    pub fn get_all_resources(&self) -> Vec<RegisteredResource> {
+        self.all_resources.clone()
+    }
+
+    /// Get all registered upstream prompts
+    pub fn get_all_prompts(&self) -> Vec<RegisteredPrompt> {
+        self.all_prompts.clone()
+    }
+
     /// Find server owning a tool
     pub fn find_tool_server(&self, name_or_fqn: &str) -> Option<String> {
         self.tool_index.get(name_or_fqn).cloned()
@@ -574,10 +584,13 @@ impl GatewayMultiplexer {
                 let has_resources = caps.get("resources").is_some();
                 let has_prompts = caps.get("prompts").is_some();
 
+                const MAX_PAGES: usize = 100;
                 let mut tools = Vec::new();
                 if has_tools {
                     let mut cursor: Option<String> = None;
-                    loop {
+                    let mut page = 0;
+                    while page < MAX_PAGES {
+                        page += 1;
                         let mut params = serde_json::Map::new();
                         if let Some(ref c) = cursor {
                             params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
@@ -591,10 +604,11 @@ impl GatewayMultiplexer {
                                     }
                                 }
                             }
-                            cursor = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                            if cursor.is_none() {
+                            let next = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if next.is_none() || next == cursor {
                                 break;
                             }
+                            cursor = next;
                         } else {
                             break;
                         }
@@ -604,7 +618,9 @@ impl GatewayMultiplexer {
                 let mut resources = Vec::new();
                 if has_resources {
                     let mut cursor: Option<String> = None;
-                    loop {
+                    let mut page = 0;
+                    while page < MAX_PAGES {
+                        page += 1;
                         let mut params = serde_json::Map::new();
                         if let Some(ref c) = cursor {
                             params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
@@ -618,10 +634,11 @@ impl GatewayMultiplexer {
                                     }
                                 }
                             }
-                            cursor = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                            if cursor.is_none() {
+                            let next = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if next.is_none() || next == cursor {
                                 break;
                             }
+                            cursor = next;
                         } else {
                             break;
                         }
@@ -631,7 +648,9 @@ impl GatewayMultiplexer {
                 let mut prompts = Vec::new();
                 if has_prompts {
                     let mut cursor: Option<String> = None;
-                    loop {
+                    let mut page = 0;
+                    while page < MAX_PAGES {
+                        page += 1;
                         let mut params = serde_json::Map::new();
                         if let Some(ref c) = cursor {
                             params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
@@ -645,10 +664,11 @@ impl GatewayMultiplexer {
                                     }
                                 }
                             }
-                            cursor = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                            if cursor.is_none() {
+                            let next = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if next.is_none() || next == cursor {
                                 break;
                             }
+                            cursor = next;
                         } else {
                             break;
                         }
@@ -909,11 +929,14 @@ impl GatewayMultiplexer {
         let has_resources = caps.get("resources").is_some();
         let has_prompts = caps.get("prompts").is_some();
 
+        const MAX_PAGES: usize = 100;
         let mut tools = Vec::new();
         if has_tools {
             let mut cursor: Option<String> = None;
             let mut req_id = 2;
-            loop {
+            let mut page = 0;
+            while page < MAX_PAGES {
+                page += 1;
                 let mut params = serde_json::Map::new();
                 if let Some(ref c) = cursor {
                     params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
@@ -935,10 +958,11 @@ impl GatewayMultiplexer {
                                     }
                                 }
                             }
-                            cursor = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                            if cursor.is_none() {
+                            let next = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if next.is_none() || next == cursor {
                                 break;
                             }
+                            cursor = next;
                         } else {
                             break;
                         }
@@ -952,7 +976,9 @@ impl GatewayMultiplexer {
         if has_resources {
             let mut cursor: Option<String> = None;
             let mut req_id = 100;
-            loop {
+            let mut page = 0;
+            while page < MAX_PAGES {
+                page += 1;
                 let mut params = serde_json::Map::new();
                 if let Some(ref c) = cursor {
                     params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
@@ -974,10 +1000,11 @@ impl GatewayMultiplexer {
                                     }
                                 }
                             }
-                            cursor = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                            if cursor.is_none() {
+                            let next = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if next.is_none() || next == cursor {
                                 break;
                             }
+                            cursor = next;
                         } else {
                             break;
                         }
@@ -991,7 +1018,9 @@ impl GatewayMultiplexer {
         if has_prompts {
             let mut cursor: Option<String> = None;
             let mut req_id = 200;
-            loop {
+            let mut page = 0;
+            while page < MAX_PAGES {
+                page += 1;
                 let mut params = serde_json::Map::new();
                 if let Some(ref c) = cursor {
                     params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
@@ -1013,10 +1042,11 @@ impl GatewayMultiplexer {
                                     }
                                 }
                             }
-                            cursor = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-                            if cursor.is_none() {
+                            let next = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if next.is_none() || next == cursor {
                                 break;
                             }
+                            cursor = next;
                         } else {
                             break;
                         }

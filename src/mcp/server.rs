@@ -113,7 +113,9 @@ impl McpServer {
                 let result = json!({
                     "protocolVersion": proto,
                     "capabilities": {
-                        "tools": {}
+                        "tools": {},
+                        "resources": {},
+                        "prompts": {}
                     },
                     "serverInfo": {
                         "name": "chronofact",
@@ -184,6 +186,69 @@ impl McpServer {
                         Some(JsonRpcResponse::success(id, err_obj))
                     }
                 }
+            }
+            "resources/list" => {
+                let resources = if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    gw_guard
+                        .get_all_resources()
+                        .into_iter()
+                        .map(|r| {
+                            json!({
+                                "uri": r.definition.uri,
+                                "name": r.definition.name,
+                                "description": r.definition.description,
+                                "mimeType": r.definition.mime_type,
+                                "server": r.server_name,
+                                "fqn": r.fqn
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                Some(JsonRpcResponse::success(id, json!({ "resources": resources })))
+            }
+            "resources/read" => {
+                let params = req.params.unwrap_or(Value::Null);
+                let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+                if uri.is_empty() {
+                    return Some(JsonRpcResponse::error(id, -32602, "Missing 'uri' parameter"));
+                }
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    match gw_guard.read_resource(uri).await {
+                        Ok(val) => Some(JsonRpcResponse::success(id, val)),
+                        Err(e) => Some(JsonRpcResponse::error(
+                            id,
+                            -32000,
+                            &format!("Failed to read resource '{}': {}", uri, e),
+                        )),
+                    }
+                } else {
+                    Some(JsonRpcResponse::error(id, -32000, "Gateway subsystem not initialized"))
+                }
+            }
+            "prompts/list" => {
+                let prompts = if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    gw_guard
+                        .get_all_prompts()
+                        .into_iter()
+                        .map(|p| {
+                            json!({
+                                "name": p.definition.name,
+                                "description": p.definition.description,
+                                "arguments": p.definition.arguments,
+                                "server": p.server_name,
+                                "fqn": p.fqn
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                Some(JsonRpcResponse::success(id, json!({ "prompts": prompts })))
             }
             unknown => Some(JsonRpcResponse::error(
                 id,
@@ -579,13 +644,20 @@ impl McpServer {
         }
 
         // 2. Read-Only Gating for Cache Check: only cache tools that declare readOnlyHint: true
-        let is_read_only = {
+        let (is_read_only, canonical_tool_name) = {
             let gw_guard = gw.read().await;
-            gw_guard.get_tool_definition(name).map(|t| t.is_read_only()).unwrap_or(false)
+            let ro = gw_guard.get_tool_definition(name).map(|t| t.is_read_only()).unwrap_or(false);
+            let canonical = if let Some(server) = gw_guard.find_tool_server(name) {
+                let bare = name.split_once('/').map(|(_, b)| b).unwrap_or(name);
+                format!("{}/{}", server, bare)
+            } else {
+                name.to_string()
+            };
+            (ro, canonical)
         };
 
         if is_read_only {
-            if let Some(cached) = self.tool_cache.get(name, args) {
+            if let Some(cached) = self.tool_cache.get(&canonical_tool_name, args) {
                 if passthrough {
                     return Ok(cached);
                 } else {
@@ -623,7 +695,7 @@ impl McpServer {
 
         // 5. Cache result only for read-only tools
         if is_read_only {
-            self.tool_cache.put(name, args, upstream_result.clone());
+            self.tool_cache.put(&canonical_tool_name, args, upstream_result.clone());
         }
 
         if passthrough {
