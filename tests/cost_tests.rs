@@ -402,4 +402,134 @@ fn test_sqlite_with_busy_retry_concurrency() {
     let _ = std::fs::remove_file(&temp_dir);
 }
 
+#[test]
+fn test_tool_response_cache_fs_metadata_and_path_invalidation() {
+    use std::io::Write;
+
+    let cache = ToolResponseCache::new(60, 10);
+    let temp_file = std::env::temp_dir().join(format!("test_cache_file_{}.txt", std::process::id()));
+
+    // 1. Create file with initial content
+    {
+        let mut f = std::fs::File::create(&temp_file).expect("Failed to create temp file");
+        f.write_all(b"initial file content").expect("Failed to write temp file");
+    }
+
+    let path_str = temp_file.to_str().unwrap();
+    let args = json!({ "path": path_str });
+    let tool_name = "read_file";
+
+    // 2. Put initial cached value
+    cache.put(tool_name, &args, json!({ "content": "initial file content" }));
+
+    // Verify cache hit
+    let hit = cache.get(tool_name, &args);
+    assert!(hit.is_some(), "Expected cache hit for unchanged file");
+
+    // 3. Mutate file on disk (sleep briefly to guarantee distinct mtime)
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    {
+        let mut f = std::fs::File::create(&temp_file).expect("Failed to recreate temp file");
+        f.write_all(b"modified and updated file content with different length").expect("Failed to write updated content");
+    }
+
+    // 4. Cache get with same args must yield a MISS because mtime/size changed in the computed key
+    let stale_check = cache.get(tool_name, &args);
+    assert!(stale_check.is_none(), "Cache must MISS after underlying file was modified on disk");
+
+    // 5. Test explicit invalidate_path
+    cache.put(tool_name, &args, json!({ "content": "modified and updated file content" }));
+    assert!(cache.get(tool_name, &args).is_some());
+    cache.invalidate_path(path_str);
+    assert!(cache.get(tool_name, &args).is_none(), "invalidate_path must evict entries referencing file");
+
+    // 6. Test invalidate_filesystem_entries
+    cache.put(tool_name, &args, json!({ "content": "modified and updated file content" }));
+    assert!(cache.get(tool_name, &args).is_some());
+    cache.invalidate_filesystem_entries();
+    assert!(cache.get(tool_name, &args).is_none(), "invalidate_filesystem_entries must evict all file entries");
+
+    let _ = std::fs::remove_file(&temp_file);
+}
+
+#[test]
+fn test_tool_starvation_recovery_and_foundational_pins() {
+    let router = TfidfToolRouter::default().with_foundational_pins();
+
+    let tools = vec![
+        ToolCandidate::new("search_web", "Performs web search", "antigravity", vec!["query".into()]),
+        ToolCandidate::new("read_url_content", "Fetches url markdown", "antigravity", vec!["url".into()]),
+        ToolCandidate::new("terminal_exec", "Executes terminal commands", "antigravity", vec!["cmd".into()]),
+        ToolCandidate::new("database_migrate", "Runs sql migrations", "db", vec!["file".into()]),
+        ToolCandidate::new("chronofact_expand_tool_palette", "Recovers and injects additional tool schemas on demand during multi-step execution", "chronofact", vec!["query_or_category".into()]),
+        ToolCandidate::new("gateway_find_tools", "Searches across all upstream servers", "chronofact-gateway", vec!["query".into()]),
+    ];
+
+    // Narrow query: "search web documentation"
+    let result = router.route("search web documentation", &tools, 2, None);
+
+    // Foundational recovery tools MUST be retained even when top_k is 2
+    let retained_names: Vec<&str> = result.selected_tools.iter().map(|t| t.tool.name.as_str()).collect();
+    assert!(retained_names.contains(&"search_web"));
+    assert!(
+        retained_names.contains(&"chronofact_expand_tool_palette"),
+        "chronofact_expand_tool_palette must be pinned to prevent agent starvation in multi-hop tasks"
+    );
+    assert!(
+        retained_names.contains(&"gateway_find_tools"),
+        "gateway_find_tools must be pinned to allow tool discovery"
+    );
+
+    // Now test recovery: simulate mid-task expansion for database migration
+    let recovery_result = router.route("database postgres sql migration", &tools, 2, None);
+    let recovered_names: Vec<&str> = recovery_result.selected_tools.iter().map(|t| t.tool.name.as_str()).collect();
+    assert!(recovered_names.contains(&"database_migrate"), "Tool palette expansion must successfully recover secondary tools");
+}
+
+#[test]
+fn test_adaptive_memory_two_tier_gating_rejects_noise_cluster() {
+    use chronofact::{EmbeddingProvider, MemoryCalibrator};
+
+    // Low-similarity noise cluster (all between 0.10 and 0.22)
+    let noise_cluster: Vec<(String, f32)> = vec![
+        ("item_a".into(), 0.11),
+        ("item_b".into(), 0.14),
+        ("item_c".into(), 0.18),
+        ("item_d".into(), 0.22),
+    ];
+
+    // Filter using BgeLarge (floor: 0.55) or CohereV3 (floor: 0.45)
+    let filtered_noise = MemoryCalibrator::filter_adaptive(
+        noise_cluster,
+        EmbeddingProvider::CohereV3,
+        0.5,
+        10,
+    );
+
+    assert!(
+        filtered_noise.is_empty(),
+        "Two-tier adaptive gating must reject an entire cluster of low-similarity noise when below absolute baseline floor"
+    );
+
+    // Mixed distribution: noise items (0.10, 0.20) + relevant items (0.65, 0.88)
+    let mixed_cluster: Vec<(String, f32)> = vec![
+        ("noise_1".into(), 0.10),
+        ("noise_2".into(), 0.20),
+        ("good_1".into(), 0.65),
+        ("good_2".into(), 0.88),
+    ];
+
+    let filtered_mixed = MemoryCalibrator::filter_adaptive(
+        mixed_cluster,
+        EmbeddingProvider::CohereV3,
+        -1.0,
+        10,
+    );
+
+    assert_eq!(filtered_mixed.len(), 2, "Only items passing both absolute floor and dynamic threshold should be retained");
+    let kept_names: Vec<String> = filtered_mixed.into_iter().map(|(name, _)| name).collect();
+    assert!(kept_names.contains(&"good_1".to_string()));
+    assert!(kept_names.contains(&"good_2".to_string()));
+}
+
 

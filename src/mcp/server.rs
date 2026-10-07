@@ -667,6 +667,49 @@ impl McpServer {
                     }
                 }))
             }
+            "chronofact_expand_tool_palette" => {
+                let query = args.get("query_or_category")
+                    .or_else(|| args.get("query"))
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'query_or_category'")?;
+                let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
+
+                let mut all_candidates = vec![
+                    ToolCandidate::new("chronofact_temporal_check", "Examines a query against a model's knowledge cutoff and estimated training freeze date", "chronofact", vec!["model_id".into(), "query".into()]),
+                    ToolCandidate::new("chronofact_ground_query", "Performs real-time web retrieval, validates URLs against SSRF, and sanitizes untrusted content", "chronofact", vec!["query".into(), "max_results".into()]),
+                    ToolCandidate::new("chronofact_verify_claims", "Decomposes a text response into atomic propositions and checks each against retrieved source evidence", "chronofact", vec!["response_text".into(), "sources".into()]),
+                    ToolCandidate::new("chronofact_memory_save", "Persists an architectural invariant, tech stack version, or project rule into L3 semantic memory", "chronofact", vec!["project_id".into(), "entity_name".into(), "definition".into()]),
+                    ToolCandidate::new("chronofact_memory_dossier", "Retrieves the persistent Project Truth Dossier with Zero-Pollution Guard", "chronofact", vec!["project_id".into(), "query".into()]),
+                    ToolCandidate::new("chronofact_cost_optimize", "Filters available tools to top-k relevant tools using TF-IDF routing to save tokens", "chronofact", vec!["query".into(), "top_k".into()]),
+                    ToolCandidate::new("chronofact_cost_metrics", "Returns real-time token savings, prompt cache hit rate, and estimated USD cost saved across the session", "chronofact", vec![]),
+                    ToolCandidate::new("chronofact_verify_code_invariants", "Performs enterprise architectural and security invariant audits on source code, PR diffs, or manifests", "chronofact", vec!["file_path".into(), "content".into()]),
+                    ToolCandidate::new("chronofact_attestation_generate", "Generates a cryptographically signed Invariant Attestation certificate binding code content and temporal anchor", "chronofact", vec!["project_id".into(), "file_path".into(), "content".into()]),
+                    ToolCandidate::new("chronofact_expand_tool_palette", "Recovers and injects additional tool schemas on demand during multi-step execution", "chronofact", vec!["query_or_category".into(), "top_k".into()]),
+                    ToolCandidate::new("gateway_find_tools", "Search across all upstream servers and native tools via TF-IDF", "chronofact-gateway", vec!["query".into(), "top_k".into()]),
+                    ToolCandidate::new("gateway_call_tool", "Execute tool on multiplexed upstream server with security and anti-hallucination verification", "chronofact-gateway", vec!["name".into(), "arguments".into()]),
+                    ToolCandidate::new("gateway_list_servers", "Lists all connected upstream MCP servers and health", "chronofact-gateway", vec![]),
+                    ToolCandidate::new("run_command", "Propose a command to run on behalf of the user in PowerShell shell", "antigravity", vec!["CommandLine".into(), "Cwd".into()]),
+                    ToolCandidate::new("view_file", "View the contents of a file from the local filesystem", "antigravity", vec!["AbsolutePath".into()]),
+                    ToolCandidate::new("replace_file_content", "Use this tool to edit an existing file with single contiguous replacement", "antigravity", vec!["TargetFile".into(), "TargetContent".into(), "ReplacementContent".into()]),
+                    ToolCandidate::new("write_to_file", "Use this tool to create new files or overwrite existing files", "antigravity", vec!["TargetFile".into(), "CodeContent".into()]),
+                    ToolCandidate::new("search_web", "Performs a web search for a given query and returns summary", "antigravity", vec!["query".into()]),
+                    ToolCandidate::new("read_url_content", "Fetch content from a URL via HTTP request", "antigravity", vec!["Url".into()]),
+                ];
+
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    all_candidates.extend(gw_guard.to_tool_candidates());
+                }
+
+                let routing = self.tool_router.route(query, &all_candidates, top_k, None);
+                Ok(json!({
+                    "expanded_tools": routing.selected_tools,
+                    "count": routing.selected_tools.len(),
+                    "query_or_category": query,
+                    "recovery_status": "SUCCESS",
+                    "instruction": "These tool schemas are now recovered and available for your current execution turn."
+                }))
+            }
             other => {
                 if let Some(ref gw) = self.gateway {
                     let gw_guard = gw.read().await;
@@ -750,9 +793,32 @@ impl McpServer {
             None
         };
 
-        // 5. Cache result only for read-only tools
+        // 5. Cache result for read-only tools, or invalidate cache for mutating tools
         if is_read_only {
             self.tool_cache.put(&canonical_tool_name, args, upstream_result.clone());
+        } else {
+            let tool_lower = name.to_lowercase();
+            if tool_lower.contains("write")
+                || tool_lower.contains("edit")
+                || tool_lower.contains("replace")
+                || tool_lower.contains("modify")
+                || tool_lower.contains("delete")
+                || tool_lower.contains("remove")
+            {
+                if let Some(path) = ToolResponseCache::extract_path(args) {
+                    self.tool_cache.invalidate_path(&path);
+                } else {
+                    self.tool_cache.invalidate_filesystem_entries();
+                }
+            } else if tool_lower.contains("command")
+                || tool_lower.contains("exec")
+                || tool_lower.contains("run")
+                || tool_lower.contains("terminal")
+                || tool_lower.contains("shell")
+                || tool_lower.contains("bash")
+            {
+                self.tool_cache.invalidate_filesystem_entries();
+            }
         }
 
         if passthrough {

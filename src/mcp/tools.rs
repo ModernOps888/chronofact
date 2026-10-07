@@ -254,6 +254,24 @@ pub fn list_tools() -> Value {
                     },
                     "required": ["project_id", "file_path", "content"]
                 }
+            },
+            {
+                "name": "chronofact_expand_tool_palette",
+                "description": "Recovers and injects additional tool schemas on demand during multi-step execution. Use when the current pruned toolset lacks necessary operations (e.g. database, config, terminal, filesystem) to resolve downstream tasks.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query_or_category": {
+                            "type": "string",
+                            "description": "Description of the operation or category needed (e.g. 'database sql execution', 'write configuration file', 'terminal command')"
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of matching tool schemas to recover (default: 4)"
+                        }
+                    },
+                    "required": ["query_or_category"]
+                }
             }
         ]
     })

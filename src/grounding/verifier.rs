@@ -213,6 +213,8 @@ impl FactVerifier {
         let mut matched_sources = Vec::new();
         let mut contradiction_detected = false;
         let mut contradiction_source = String::new();
+        let mut contradiction_rationale = String::new();
+        let mut concessive_source_found = false;
 
         let negations = [
             "not supported",
@@ -222,6 +224,37 @@ impl FactVerifier {
             "unsupported",
             "abandoned",
             "incompatible",
+        ];
+
+        const POLARITY_ANTONYMS: &[(&str, &str)] = &[
+            ("enabled", "disabled"),
+            ("disabled", "enabled"),
+            ("allow", "deny"),
+            ("deny", "allow"),
+            ("supported", "unsupported"),
+            ("unsupported", "supported"),
+            ("active", "inactive"),
+            ("inactive", "active"),
+            ("mandatory", "optional"),
+            ("optional", "mandatory"),
+            ("synchronous", "asynchronous"),
+            ("asynchronous", "synchronous"),
+            ("read-only", "read-write"),
+            ("read-write", "read-only"),
+            ("client-side", "server-side"),
+            ("server-side", "client-side"),
+        ];
+
+        const CONCESSIVE_MARKERS: &[&str] = &[
+            "although",
+            "even though",
+            "despite",
+            "temporarily restored",
+            "restored behind a feature flag",
+            "behind a feature flag",
+            "behind a flag",
+            "opt-in via",
+            "opt-in through",
         ];
 
         for source in sources {
@@ -242,6 +275,11 @@ impl FactVerifier {
                 best_overlap = overlap_ratio;
             }
 
+            // Check for concessive clauses or temporary qualifications
+            if CONCESSIVE_MARKERS.iter().any(|m| source_lower.contains(m) || statement_lower.contains(m)) {
+                concessive_source_found = true;
+            }
+
             // Check if claim asserts support/availability while source asserts deprecation/removal
             for neg in &negations {
                 if source_lower.contains(neg)
@@ -254,7 +292,25 @@ impl FactVerifier {
                 {
                     contradiction_detected = true;
                     contradiction_source = source.id.clone();
+                    contradiction_rationale = format!("Potential contradiction identified with source {}: contradictory status detected", contradiction_source);
                     break;
+                }
+            }
+
+            // Check for semantic polarity antonym inversion in overlapping scope
+            for &(claim_term, source_term) in POLARITY_ANTONYMS {
+                if statement_lower.contains(claim_term) && source_lower.contains(source_term) && matches >= 2 {
+                    let scoped_contexts = ["in production", "by default", "in staging", "globally", "default in production"];
+                    let same_scope = scoped_contexts.iter().any(|sc| statement_lower.contains(sc) && source_lower.contains(sc));
+                    if same_scope || overlap_ratio >= 0.40 {
+                        contradiction_detected = true;
+                        contradiction_source = source.id.clone();
+                        contradiction_rationale = format!(
+                            "Semantic scope inversion (Polarity inversion antonym detected): claim asserts '{}' whereas source {} asserts '{}' in overlapping scope",
+                            claim_term, contradiction_source, source_term
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -264,7 +320,14 @@ impl FactVerifier {
                 VerificationStatus::Contradicted,
                 0.15,
                 vec![contradiction_source.clone()],
-                format!("Potential contradiction identified with source {}: contradictory status detected", contradiction_source),
+                contradiction_rationale,
+            )
+        } else if concessive_source_found && best_overlap >= 0.35 {
+            (
+                VerificationStatus::Unverified,
+                0.50,
+                matched_sources,
+                "AMBIGUOUS_SCOPE: Concessive or temporary qualification detected ('although' / 'temporarily restored' / 'feature flag'). Pre-NLI lexical cascade triage flags ambiguous boundary zone (confidence: 0.50); requires cross-encoder NLI to verify entailment.".to_string(),
             )
         } else if best_overlap >= 0.50 {
             (

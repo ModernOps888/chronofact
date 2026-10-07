@@ -111,9 +111,18 @@ impl TfidfToolRouter {
         }
     }
 
-    /// Pre-configures mandatory always-retained foundational operational tools.
+    /// Pre-configures mandatory always-retained foundational operational tools and recovery meta-tools.
     pub fn with_foundational_pins(mut self) -> Self {
-        for tool in &["read_file", "write_file", "view_file", "replace_file_content", "terminal_exec", "run_command"] {
+        for tool in &[
+            "read_file",
+            "write_file",
+            "view_file",
+            "replace_file_content",
+            "terminal_exec",
+            "run_command",
+            "chronofact_expand_tool_palette",
+            "gateway_find_tools",
+        ] {
             self.always_retained.insert(tool.to_string());
         }
         self
@@ -251,10 +260,12 @@ impl TfidfToolRouter {
         }
 
 
-        // 2. Fill remaining slots up to top_k with highest scoring tools
+        // 2. Fill remaining slots up to (pinned_count + top_k) with highest scoring query-matched tools
+        let pinned_count = selected_indices.len();
+        let target_total = pinned_count + top_k;
         for (i, score) in scored {
             if !added_indices.contains(&i) {
-                if selected_indices.len() >= top_k {
+                if selected_indices.len() >= target_total {
                     break;
                 }
                 selected_indices.push((i, score));
@@ -389,7 +400,7 @@ fn tfidf_cosine_similarity(
 /// Alias for ToolCandidate conforming to enterprise tool schema specifications.
 pub type ToolSchema = ToolCandidate;
 
-/// Mandatory foundational execution primitives that must never be pruned.
+/// Mandatory foundational execution primitives and dynamic recovery meta-tools that must never be pruned.
 pub const ALWAYS_RETAINED: &[&str] = &[
     "read_file",
     "write_file",
@@ -398,6 +409,8 @@ pub const ALWAYS_RETAINED: &[&str] = &[
     "terminal_exec",
     "run_command",
     "bash",
+    "chronofact_expand_tool_palette",
+    "gateway_find_tools",
 ];
 
 /// Extracts normalized unigram tokens from text.

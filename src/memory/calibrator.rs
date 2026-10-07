@@ -59,11 +59,14 @@ impl MemoryCalibrator {
         let stddev = variance.sqrt();
         let relative_threshold = mean + multiplier * stddev;
 
-        // Ensure we don't drop below the provider's baseline floor * 0.8, nor exceed ceiling (0.95)
-        relative_threshold.max(floor * 0.8).min(0.95)
+        // Strict Two-Tier Gate: Never drop below the provider's absolute baseline floor, nor exceed ceiling (0.95)
+        relative_threshold.max(floor).min(0.95)
     }
 
-    /// Filters and ranks candidate memory entities using relative distribution adaptive thresholding.
+    /// Filters and ranks candidate memory entities using a two-tier gate:
+    /// Tier 1: Candidate score must meet the provider's absolute baseline floor.
+    /// Tier 2: Qualified candidates must meet the adaptive distribution threshold (mean + multiplier * stddev).
+    /// If all candidate scores reside in a low-similarity noise cluster (e.g. 0.10-0.22), returns empty to prevent context pollution.
     pub fn filter_adaptive<T: Clone>(
         items: Vec<(T, f32)>,
         provider: EmbeddingProvider,
@@ -74,10 +77,17 @@ impl MemoryCalibrator {
             return Vec::new();
         }
 
-        let scores: Vec<f32> = items.iter().map(|(_, s)| *s).collect();
+        let floor = provider.default_floor_threshold();
+        // Tier 1 Gate: Eliminate low-similarity cluster noise below absolute floor
+        let qualified: Vec<(T, f32)> = items.into_iter().filter(|(_, s)| *s >= floor).collect();
+        if qualified.is_empty() {
+            return Vec::new();
+        }
+
+        let scores: Vec<f32> = qualified.iter().map(|(_, s)| *s).collect();
         let adaptive_threshold = Self::calculate_adaptive_threshold(&scores, provider, multiplier);
 
-        let mut filtered: Vec<(T, f32)> = items
+        let mut filtered: Vec<(T, f32)> = qualified
             .into_iter()
             .filter(|(_, s)| *s >= adaptive_threshold)
             .collect();
@@ -101,20 +111,32 @@ impl MemoryCalibrator {
         sorted[index]
     }
 
-    /// Filters and ranks candidate memory entities using percentile-based ranking.
-    pub fn filter_by_percentile<T: Clone>(
+    /// Filters and ranks candidate memory entities using percentile-based ranking constrained by an absolute baseline floor.
+    /// Low-similarity candidates below absolute_floor are purged before percentile ranking.
+    pub fn filter_by_percentile_with_floor<T: Clone>(
         items: Vec<(T, f32)>,
         percentile: f32,
+        absolute_floor: f32,
         max_top_k: usize,
     ) -> Vec<(T, f32)> {
         if items.is_empty() {
             return Vec::new();
         }
 
-        let scores: Vec<f32> = items.iter().map(|(_, s)| *s).collect();
+        // Tier 1 Gate: Drop low-similarity cluster noise below absolute floor
+        let qualified: Vec<(T, f32)> = items
+            .into_iter()
+            .filter(|(_, s)| *s >= absolute_floor)
+            .collect();
+
+        if qualified.is_empty() {
+            return Vec::new();
+        }
+
+        let scores: Vec<f32> = qualified.iter().map(|(_, s)| *s).collect();
         let rank_threshold = Self::calculate_percentile_threshold(&scores, percentile);
 
-        let mut filtered: Vec<(T, f32)> = items
+        let mut filtered: Vec<(T, f32)> = qualified
             .into_iter()
             .filter(|(_, s)| *s >= rank_threshold)
             .collect();
@@ -122,6 +144,15 @@ impl MemoryCalibrator {
         filtered.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         filtered.truncate(max_top_k);
         filtered
+    }
+
+    /// Filters and ranks candidate memory entities using percentile-based ranking with a baseline floor of 0.35.
+    pub fn filter_by_percentile<T: Clone>(
+        items: Vec<(T, f32)>,
+        percentile: f32,
+        max_top_k: usize,
+    ) -> Vec<(T, f32)> {
+        Self::filter_by_percentile_with_floor(items, percentile, 0.35, max_top_k)
     }
 }
 

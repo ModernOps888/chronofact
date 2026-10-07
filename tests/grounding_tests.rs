@@ -80,3 +80,54 @@ fn test_astra_openai_vs_google_contradiction() {
     assert_eq!(true_report.contradicted_count, 0);
 }
 
+#[test]
+fn test_polarity_antonym_contradiction() {
+    let extractor = ClaimExtractor::new();
+    let verifier = FactVerifier::new();
+
+    let sources = vec![
+        SourceChunk {
+            id: "SEC-1".to_string(),
+            title: "Security Config".to_string(),
+            url: "https://example.com/sec".to_string(),
+            content: "Remote root authentication is disabled by default in production deployments.".to_string(),
+            integrity_hash: "hash_sec".to_string(),
+            is_sanitized: true,
+        },
+    ];
+
+    // Contradictory assertion using direct antonym
+    let claim_text = "Remote root authentication is enabled by default in production deployments.";
+    let claims = extractor.extract_claims(claim_text);
+    let report = verifier.verify_claims(&claims, &sources);
+
+    assert_eq!(report.contradicted_count, 1, "Antonym pair (enabled vs disabled) must trigger contradiction");
+    assert_eq!(report.claims[0].status, VerificationStatus::Contradicted);
+    assert!(report.claims[0].rationale.contains("Polarity inversion antonym detected"));
+}
+
+#[test]
+fn test_concessive_clause_ambiguity_triage() {
+    let extractor = ClaimExtractor::new();
+    let verifier = FactVerifier::new();
+
+    let sources = vec![
+        SourceChunk {
+            id: "REL-2".to_string(),
+            title: "Release Notes".to_string(),
+            url: "https://example.com/rel".to_string(),
+            content: "Although v2.0 deprecated OpenSSL, v2.1 temporarily restored it behind a feature flag.".to_string(),
+            integrity_hash: "hash_rel".to_string(),
+            is_sanitized: true,
+        },
+    ];
+
+    let claim_text = "OpenSSL is fully supported and enabled without restrictions.";
+    let claims = extractor.extract_claims(claim_text);
+    let report = verifier.verify_claims(&claims, &sources);
+
+    // Concessive markers should prevent false-positive entailment and triage to unverified/ambiguous
+    assert_ne!(report.claims[0].status, VerificationStatus::Entailed);
+    assert!(report.claims[0].confidence_score <= 0.70, "Confidence must be bounded under concessive clauses");
+}
+

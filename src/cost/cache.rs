@@ -10,6 +10,7 @@ struct CacheEntry {
     inserted_at: Instant,
     ttl: Duration,
     hits: AtomicU64,
+    associated_path: Option<String>,
 }
 
 impl CacheEntry {
@@ -44,6 +45,12 @@ impl ToolResponseCache {
     }
 
     pub fn compute_key(tool_name: &str, arguments: &Value) -> String {
+        Self::compute_key_with_fs_metadata(tool_name, arguments)
+    }
+
+    /// Computes a cache key incorporating filesystem metadata (mtime and size) when target arguments reference local files.
+    /// This prevents stale cache hits on read_file/view_file when underlying files mutate on disk.
+    pub fn compute_key_with_fs_metadata(tool_name: &str, arguments: &Value) -> String {
         let mut hasher = Sha256::new();
         hasher.update(tool_name.as_bytes());
         hasher.update(b":");
@@ -56,7 +63,81 @@ impl ToolResponseCache {
             other => serde_json::to_string(other).unwrap_or_default(),
         };
         hasher.update(arg_str.as_bytes());
+
+        // Filesystem State Awareness:
+        // If the tool arguments contain a target file path (e.g. read_file, view_file),
+        // incorporate the target file's mtime (nanoseconds) and size into the hash.
+        if let Some(val) = Self::extract_path(arguments) {
+            if let Ok(meta) = std::fs::metadata(&val) {
+                let mtime = meta.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let len = meta.len();
+                hasher.update(format!(":fs_mtime={}:fs_len={}", mtime, len).as_bytes());
+            }
+        }
+
         format!("{:x}", hasher.finalize())
+    }
+
+    /// Extracts a file path from arguments if present under standard file parameter keys.
+    pub fn extract_path(arguments: &Value) -> Option<String> {
+        let file_path_keys = ["path", "AbsolutePath", "file_path", "TargetFile", "file", "target_file", "filename"];
+        if let Value::Object(map) = arguments {
+            for key in &file_path_keys {
+                if let Some(val) = map.get(*key).and_then(|v| v.as_str()) {
+                    return Some(val.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Invalidates all cached entries referencing a specific file path or filename.
+    pub fn invalidate_path(&self, path: &str) {
+        if let Ok(mut entries) = self.entries.write() {
+            let path_clean = path.replace('\\', "/").to_lowercase();
+            let file_name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path)
+                .to_lowercase();
+
+            let keys_to_remove: Vec<String> = entries
+                .iter()
+                .filter(|(_, entry)| {
+                    if let Some(ref p) = entry.associated_path {
+                        let p_clean = p.replace('\\', "/").to_lowercase();
+                        if p_clean.contains(&path_clean) || path_clean.contains(&p_clean) || p_clean.ends_with(&file_name) {
+                            return true;
+                        }
+                    }
+                    let entry_str = entry.value.to_string().to_lowercase();
+                    entry_str.contains(&path_clean) || entry_str.contains(&file_name)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in keys_to_remove {
+                entries.remove(&k);
+            }
+        }
+    }
+
+    /// Invalidates all cached entries that reference any local filesystem path.
+    /// Used when mutating operations (e.g. build commands or terminal execution) may alter disk state.
+    pub fn invalidate_filesystem_entries(&self) {
+        if let Ok(mut entries) = self.entries.write() {
+            let keys_to_remove: Vec<String> = entries
+                .iter()
+                .filter(|(_, entry)| entry.associated_path.is_some())
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in keys_to_remove {
+                entries.remove(&k);
+            }
+        }
     }
 
     pub fn get(&self, tool_name: &str, arguments: &Value) -> Option<Value> {
@@ -78,6 +159,7 @@ impl ToolResponseCache {
 
     pub fn put(&self, tool_name: &str, arguments: &Value, value: Value) {
         let key = Self::compute_key(tool_name, arguments);
+        let associated_path = Self::extract_path(arguments);
 
         if let Ok(mut entries) = self.entries.write() {
             // Evict if at capacity
@@ -110,6 +192,7 @@ impl ToolResponseCache {
                     inserted_at: Instant::now(),
                     ttl: self.default_ttl,
                     hits: AtomicU64::new(0),
+                    associated_path,
                 },
             );
         }
