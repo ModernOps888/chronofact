@@ -36,7 +36,7 @@ $port3030 = Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction Sile
 if (-not $port3030) {
     if (-not $Quiet) { Write-Host "`n[1/2] Launching Rust Epistemic Engine on http://127.0.0.1:3030 ..." -ForegroundColor Green }
     $windowStyle = if ($Quiet) { "Hidden" } else { "Minimized" }
-    Start-Process -FilePath $exeToRun -ArgumentList "serve", "--port", "3030" -WindowStyle $windowStyle
+    Start-Process -FilePath $exeToRun -ArgumentList "serve", "--port", "3030" -WorkingDirectory "c:\chronofact" -WindowStyle $windowStyle
     Start-Sleep -Seconds 1
 } else {
     if (-not $Quiet) { Write-Host "`n[1/2] Rust Epistemic Engine already listening on http://127.0.0.1:3030" -ForegroundColor Green }
