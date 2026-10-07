@@ -15,9 +15,16 @@ pub use gateway::{
     GatewayMultiplexer, RegisteredPrompt, RegisteredResource, RegisteredTool, UpstreamServer,
     UpstreamServerConfig, UpstreamServerStatus,
 };
-pub use grounding::{ClaimCategory, ClaimExtractor, FactVerifier, VerificationReport, VerificationStatus};
+pub use grounding::{
+    AttestationEngine, AuditVerdict, ClaimCategory, ClaimExtractor, CodeAuditReport,
+    CodeInvariantChecker, FactVerifier, InvariantAttestation, InvariantRule, InvariantSeverity,
+    InvariantViolation, VerificationReport, VerificationStatus,
+};
 pub use mcp::McpServer;
-pub use memory::{DriftEvent, MemoryEngine, ProjectDossier, ProjectEntity, SessionEvent, SessionSummary};
+pub use memory::{
+    DriftEvent, EmbeddingProvider, MemoryCalibrator, MemoryEngine, ProjectDossier, ProjectEntity,
+    SessionEvent, SessionSummary,
+};
 pub use proxy::{ApiServer, AppState};
 pub use research::{ContentExtractor, SearchEngine, SourceChunk};
 pub use security::{ContentSanitizer, RateLimiter, SecurityError, SecurityValidator};

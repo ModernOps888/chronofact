@@ -34,6 +34,12 @@ pub struct VerificationReport {
     pub unverified_count: usize,
     pub hallucination_risk_index: f32, // 0.0 (clean) to 1.0 (high hallucination risk)
     pub claims: Vec<VerifiedClaim>,
+    #[serde(default = "default_engine_name")]
+    pub verification_engine: String,
+}
+
+fn default_engine_name() -> String {
+    "Deterministic Lexical & Invariant Rule Engine (Pre-NLI Invariant Cascade)".to_string()
 }
 
 pub struct FactVerifier {
@@ -94,6 +100,7 @@ impl FactVerifier {
             unverified_count,
             hallucination_risk_index,
             claims: verified_claims,
+            verification_engine: default_engine_name(),
         }
     }
 

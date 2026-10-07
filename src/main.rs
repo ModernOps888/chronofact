@@ -33,6 +33,15 @@ enum Commands {
     },
     /// Run security sanity checks and print defensive audit status
     Audit,
+    /// Run CI/CD Architectural & Security Invariant Gate
+    CheckCi {
+        #[arg(short, long)]
+        path: String,
+        #[arg(long, default_value = "enterprise")]
+        project: String,
+        #[arg(long)]
+        attest: bool,
+    },
 }
 
 #[tokio::main]
@@ -192,6 +201,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             println!("  [PASS] Gateway Multiplexer (configured with {} upstreams, stdio + Streamable HTTP support)", config.servers.len());
 
             println!("\nAll 5 defensive security assertions PASSED empirically in {:.2?}.", audit_start.elapsed());
+        }
+        Commands::CheckCi { path, project, attest } => {
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error reading target path '{}': {}", path, e);
+                    std::process::exit(1);
+                }
+            };
+
+            let checker = chronofact::CodeInvariantChecker::new();
+            let report = checker.audit_code(&path, &content, None);
+
+            println!("============================================================");
+            println!("⚡ CHRONOFACT ENTERPRISE INVARIANT GATE (CI/CD)");
+            println!("Target: {}", report.target);
+            println!("Lines Audited: {}", report.total_lines_audited);
+            println!("Rules Evaluated: {}", report.total_rules_evaluated);
+            println!("Duration: {:.2}ms", report.execution_duration_ms);
+            println!(
+                "Violations: {} (Critical: {}, High: {}, Medium: {}, Low: {})",
+                report.violations_count, report.critical_count, report.high_count, report.medium_count, report.low_count
+            );
+            println!("Verdict: {:?}", report.verdict);
+            println!("============================================================");
+
+            for v in &report.violations {
+                println!(
+                    "[{}] Line {}: {} ({})",
+                    v.severity.as_str(),
+                    v.line_number,
+                    v.rule_name,
+                    v.line_snippet
+                );
+                println!("    Fix: {}", v.remediation);
+            }
+
+            if attest {
+                let today = chrono::Utc::now().naive_utc().date().to_string();
+                let attestation =
+                    chronofact::AttestationEngine::create_attestation(&report, &project, &content, &today, None);
+                println!(
+                    "\nCryptographic Invariant Attestation:\n{}",
+                    serde_json::to_string_pretty(&attestation)?
+                );
+            }
+
+            if report.verdict == chronofact::AuditVerdict::Block {
+                eprintln!("\n❌ CI/CD GATE FAILED: Enterprise code invariant violations blocked deployment.");
+                std::process::exit(1);
+            } else {
+                println!("\n✅ CI/CD GATE PASSED: All critical & high enterprise invariants satisfied.");
+            }
         }
     }
 

@@ -44,6 +44,7 @@ impl ModelRegistry {
             models: HashMap::new(),
         };
         registry.seed_known_models();
+        registry.load_environmental_overrides();
         registry
     }
 
@@ -437,6 +438,45 @@ impl ModelRegistry {
     pub fn register_model(&mut self, horizon: ModelHorizon) {
         let key = horizon.model_id.to_lowercase();
         self.models.insert(key, horizon);
+    }
+
+    /// Checks for environment variable overrides or local configuration files to prevent cutoff drift.
+    pub fn load_environmental_overrides(&mut self) {
+        // 1. Check CHRONOFACT_MODELS_OVERRIDE env var
+        if let Ok(env_val) = std::env::var("CHRONOFACT_MODELS_OVERRIDE") {
+            let trimmed = env_val.trim();
+            if trimmed.starts_with('[') || trimmed.starts_with('{') {
+                let _ = self.load_from_json(trimmed);
+            } else if std::path::Path::new(trimmed).exists() {
+                let _ = self.load_from_file(trimmed);
+            }
+        }
+
+        // 2. Check local fallback configuration files
+        for fallback_path in &["chronofact_models.json", "config/models_override.json", "../config/models_override.json"] {
+            if std::path::Path::new(fallback_path).exists() {
+                let _ = self.load_from_file(fallback_path);
+                break;
+            }
+        }
+    }
+
+    /// Dynamically loads model horizons from a JSON array string.
+    pub fn load_from_json(&mut self, json_str: &str) -> Result<usize, String> {
+        let parsed: Vec<ModelHorizon> = serde_json::from_str(json_str)
+            .map_err(|e| format!("Failed to parse models JSON: {}", e))?;
+        let count = parsed.len();
+        for m in parsed {
+            self.register_model(m);
+        }
+        Ok(count)
+    }
+
+    /// Dynamically loads model horizons from a local JSON file.
+    pub fn load_from_file(&mut self, path: &str) -> Result<usize, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read models file at '{}': {}", path, e))?;
+        self.load_from_json(&content)
     }
 }
 

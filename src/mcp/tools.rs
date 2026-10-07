@@ -205,6 +205,55 @@ pub fn list_tools() -> Value {
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "chronofact_verify_code_invariants",
+                "description": "Performs enterprise architectural and security invariant audits on source code, PR diffs, or manifests (detecting SQL injection, hardcoded secrets, layer/DAL leaks, deprecated libraries, and SSRF). Returns structured pass/block report.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Target relative or absolute file path being audited (e.g. 'src/services/billing.rs')"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The source code, diff, or configuration to evaluate against enterprise invariants"
+                        },
+                        "custom_rules": {
+                            "type": "array",
+                            "description": "Optional custom architectural invariant rules to enforce",
+                            "items": { "type": "object" }
+                        }
+                    },
+                    "required": ["file_path", "content"]
+                }
+            },
+            {
+                "name": "chronofact_attestation_generate",
+                "description": "Generates a cryptographically signed Invariant Attestation certificate (SHA-256 HMAC) binding code content, temporal anchor, rules evaluated, and verification verdict for CI/CD gates.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Identifier of the project"
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path of the verified file or diff"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The exact audited content"
+                        },
+                        "temporal_anchor": {
+                            "type": "string",
+                            "description": "Active temporal anchor string or evaluation date"
+                        }
+                    },
+                    "required": ["project_id", "file_path", "content"]
+                }
             }
         ]
     })

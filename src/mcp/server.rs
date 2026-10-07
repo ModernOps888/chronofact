@@ -610,6 +610,43 @@ impl McpServer {
 
                 self.dispatch_upstream_tool(tool_name, &tool_args, verify_output, passthrough).await
             }
+            "chronofact_verify_code_invariants" => {
+                let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let content = args.get("content").and_then(|v| v.as_str()).ok_or("Missing 'content'")?;
+                let custom_rules: Option<Vec<crate::grounding::InvariantRule>> =
+                    args.get("custom_rules").and_then(|v| serde_json::from_value(v.clone()).ok());
+
+                let checker = crate::grounding::CodeInvariantChecker::new();
+                let report = checker.audit_code(file_path, content, custom_rules.as_deref());
+
+                Ok(json!(report))
+            }
+            "chronofact_attestation_generate" => {
+                let project_id = args.get("project_id").and_then(|v| v.as_str()).unwrap_or("default");
+                let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let content = args.get("content").and_then(|v| v.as_str()).ok_or("Missing 'content'")?;
+                let temporal_anchor = args.get("temporal_anchor").and_then(|v| v.as_str()).unwrap_or("2026-10-07");
+
+                let checker = crate::grounding::CodeInvariantChecker::new();
+                let report = checker.audit_code(file_path, content, None);
+                let attestation = crate::grounding::AttestationEngine::create_attestation(
+                    &report,
+                    project_id,
+                    content,
+                    temporal_anchor,
+                    None,
+                );
+
+                Ok(json!({
+                    "attestation": attestation,
+                    "report_summary": {
+                        "verdict": report.verdict,
+                        "violations_count": report.violations_count,
+                        "critical_count": report.critical_count,
+                        "high_count": report.high_count
+                    }
+                }))
+            }
             other => {
                 if let Some(ref gw) = self.gateway {
                     let gw_guard = gw.read().await;

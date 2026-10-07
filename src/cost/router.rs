@@ -8,20 +8,28 @@ pub struct ToolCandidate {
     pub server_name: String,
     pub parameters: Vec<String>,
     pub estimated_tokens: usize,
+    #[serde(default)]
+    pub is_pinned: bool,
 }
 
 impl ToolCandidate {
     pub fn new(name: &str, description: &str, server_name: &str, parameters: Vec<String>) -> Self {
-        // Approximate token calculation: ~4 chars per token + schema JSON overhead
         let total_chars = name.len() + description.len() + server_name.len() + parameters.iter().map(|p| p.len()).sum::<usize>();
-        let estimated_tokens = (total_chars / 4).max(180); // typical minimal MCP tool schema is ~180-250 tokens
+        let estimated_tokens = (total_chars / 4).max(180);
         Self {
             name: name.to_string(),
             description: description.to_string(),
             server_name: server_name.to_string(),
             parameters,
             estimated_tokens,
+            is_pinned: false,
         }
+    }
+
+    pub fn new_pinned(name: &str, description: &str, server_name: &str, parameters: Vec<String>) -> Self {
+        let mut t = Self::new(name, description, server_name, parameters);
+        t.is_pinned = true;
+        t
     }
 }
 
@@ -45,6 +53,8 @@ pub struct RoutingResult {
 
 pub struct TfidfToolRouter {
     default_threshold: f32,
+    intent_dictionary: HashMap<String, Vec<String>>,
+    pinned_names: HashSet<String>,
 }
 
 impl Default for TfidfToolRouter {
@@ -55,7 +65,60 @@ impl Default for TfidfToolRouter {
 
 impl TfidfToolRouter {
     pub fn new(default_threshold: f32) -> Self {
-        Self { default_threshold }
+        let mut intent_dictionary: HashMap<String, Vec<String>> = HashMap::new();
+        let mappings = vec![
+            ("compile", vec!["run_command", "terminal_exec", "read_file", "view_file"]),
+            ("build", vec!["run_command", "terminal_exec", "read_file", "view_file"]),
+            ("cargo", vec!["run_command", "terminal_exec"]),
+            ("npm", vec!["run_command", "terminal_exec"]),
+            ("make", vec!["run_command", "terminal_exec"]),
+            ("error", vec!["read_file", "view_file", "run_command", "mobile_diagnose"]),
+            ("failing", vec!["read_file", "view_file", "run_command"]),
+            ("crash", vec!["read_file", "view_file", "run_command", "mobile_diagnose"]),
+            ("trace", vec!["read_file", "view_file", "run_command", "mobile_inspect_trace"]),
+            ("bug", vec!["read_file", "view_file", "run_command"]),
+            ("test", vec!["run_command", "read_file"]),
+            ("git", vec!["run_command", "git_commit"]),
+            ("commit", vec!["run_command", "git_commit"]),
+            ("push", vec!["run_command"]),
+            ("diff", vec!["run_command", "read_file", "view_file"]),
+            ("architecture", vec!["chronofact_verify_code_invariants", "spine_reality_audit", "chronofact_memory_save"]),
+            ("invariant", vec!["chronofact_verify_code_invariants", "spine_reality_audit"]),
+            ("security", vec!["chronofact_verify_code_invariants", "spine_reality_audit"]),
+            ("audit", vec!["chronofact_verify_code_invariants", "spine_reality_audit"]),
+            ("temporal", vec!["chronofact_temporal_check"]),
+            ("cutoff", vec!["chronofact_temporal_check"]),
+            ("freeze", vec!["chronofact_temporal_check"]),
+            ("drift", vec!["chronofact_temporal_check"]),
+            ("search", vec!["search_web", "web_search", "chronofact_ground_query", "read_url_content"]),
+            ("docs", vec!["search_web", "read_url_content", "chronofact_ground_query"]),
+            ("documentation", vec!["search_web", "read_url_content", "chronofact_ground_query"]),
+            ("ground", vec!["chronofact_ground_query"]),
+        ];
+
+        for (intent, target_tools) in mappings {
+            intent_dictionary.insert(
+                intent.to_string(),
+                target_tools.into_iter().map(|s| s.to_string()).collect(),
+            );
+        }
+
+        Self {
+            default_threshold,
+            intent_dictionary,
+            pinned_names: HashSet::new(),
+        }
+    }
+
+    pub fn with_pinned_tools(mut self, pinned: &[&str]) -> Self {
+        for p in pinned {
+            self.pinned_names.insert(p.to_string());
+        }
+        self
+    }
+
+    pub fn pin_tool(&mut self, tool_name: &str) {
+        self.pinned_names.insert(tool_name.to_string());
     }
 
     pub fn route(
@@ -82,21 +145,15 @@ impl TfidfToolRouter {
         }
 
         let query_tokens = tokenize(query);
-        if query_tokens.is_empty() {
-            let selected: Vec<ScoredTool> = tools.iter().take(top_k).map(|t| ScoredTool { tool: t.clone(), relevance_score: 0.5 }).collect();
-            let after: usize = selected.iter().map(|s| s.tool.estimated_tokens).sum();
-            let saved = total_tokens.saturating_sub(after);
-            let pct = if total_tokens > 0 { (saved as f32 / total_tokens as f32) * 100.0 } else { 0.0 };
-            return RoutingResult {
-                query: query.to_string(),
-                selected_tools: selected,
-                total_tools: tools.len(),
-                pruned_tools: tools.len().saturating_sub(top_k),
-                tokens_before: total_tokens,
-                tokens_after: after,
-                tokens_saved: saved,
-                savings_percentage: pct,
-            };
+
+        // Detect semantic intent triggers to resolve idiomatic queries with zero unigram overlap
+        let mut intent_matched_tools: HashSet<String> = HashSet::new();
+        for qt in &query_tokens {
+            if let Some(target_list) = self.intent_dictionary.get(qt) {
+                for target in target_list {
+                    intent_matched_tools.insert(target.clone());
+                }
+            }
         }
 
         // Build document tokens per tool
@@ -128,32 +185,59 @@ impl TfidfToolRouter {
             })
             .collect();
 
-        // Score tools
+        // Score tools with hybrid TF-IDF + Semantic Intent Boost
         let mut scored: Vec<(usize, f32)> = doc_tokens
             .iter()
             .enumerate()
             .map(|(i, tokens)| {
-                let score = tfidf_cosine_similarity(&query_tokens, tokens, &idf);
+                let mut score = tfidf_cosine_similarity(&query_tokens, tokens, &idf);
+                let tool_name = &tools[i].name;
+                // If semantic intent matched, boost relevance score
+                if intent_matched_tools.contains(tool_name) {
+                    score = (score + 0.35).min(1.0);
+                }
                 (i, score)
             })
-            .filter(|(_, score)| *score >= threshold)
+            .filter(|(i, score)| {
+                let tool = &tools[*i];
+                let is_pinned = tool.is_pinned || self.pinned_names.contains(&tool.name);
+                is_pinned || *score >= threshold
+            })
             .collect();
 
         // Sort descending by score
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // If nothing passed threshold, retain top 2 tools to ensure fallback
-        let selected_indices: Vec<(usize, f32)> = if scored.is_empty() {
-            let mut fallback: Vec<(usize, f32)> = doc_tokens
-                .iter()
-                .enumerate()
-                .map(|(i, tokens)| (i, tfidf_cosine_similarity(&query_tokens, tokens, &idf)))
-                .collect();
-            fallback.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            fallback.into_iter().take(2.min(tools.len())).collect()
-        } else {
-            scored.into_iter().take(top_k).collect()
-        };
+        // Always-Retain Pinning enforcement: Pinned tools must never be pruned
+        let mut selected_indices: Vec<(usize, f32)> = Vec::new();
+        let mut added_indices: HashSet<usize> = HashSet::new();
+
+        // 1. Add all pinned tools first
+        for (i, tool) in tools.iter().enumerate() {
+            if tool.is_pinned || self.pinned_names.contains(&tool.name) {
+                let score = scored.iter().find(|(idx, _)| *idx == i).map(|(_, s)| *s).unwrap_or(1.0);
+                selected_indices.push((i, score));
+                added_indices.insert(i);
+            }
+        }
+
+        // 2. Fill remaining slots up to top_k with highest scoring tools
+        for (i, score) in scored {
+            if !added_indices.contains(&i) {
+                if selected_indices.len() >= top_k {
+                    break;
+                }
+                selected_indices.push((i, score));
+                added_indices.insert(i);
+            }
+        }
+
+        // 3. Fallback: If nothing was matched at all and no pinned tools present
+        if selected_indices.is_empty() {
+            for (i, _) in tools.iter().enumerate().take(2.min(tools.len())) {
+                selected_indices.push((i, 0.5));
+            }
+        }
 
         let selected_tools: Vec<ScoredTool> = selected_indices
             .into_iter()
