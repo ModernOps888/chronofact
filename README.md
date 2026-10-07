@@ -55,32 +55,47 @@ Large Language Models deployed in agentic environments suffer from four critical
 ### 🕒 Pillar 1: Dynamic Temporal Horizon Calibration
 * **Pre-Release Freeze Margin Tracking**:
   - LLMs have an **official knowledge cutoff** and an **actual weight freeze date** (typically 3-6 months earlier).
-  - *Configurable Policy Templates*: OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-08-01`), Sol 6.1 (Freeze: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`). Teams can dynamically register and override custom horizon policies via API or JSON configuration.
+  - *Configurable Policy Templates*: OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-08-01`), Sol 6.1 (Freeze: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`).
+  - *Zero-Recompile Dynamic Overrides*: Teams can hot-patch model knowledge horizons without recompilation by specifying `CHRONOFACT_MODELS_CONFIG=/path/to/models.json` or inline `CHRONOFACT_MODELS_JSON='{...}'`.
 * **Rust `TemporalScanner`**:
   - Automatically identifies temporal references, semantic year markers, library major versions, and fast-moving entities.
   - Computes `days_post_freeze` and `temporal_risk_score ∈ [0.0, 1.0]`.
   - When `risk ≥ 0.35`, the engine triggers real-time grounded web retrieval and injects an un-jammable `<chronofact_temporal_anchor>` system header.
 
-### 🛡️ Pillar 2: Active Claim Extraction & Deterministic Invariant Verification
+### 🛡️ Pillar 2: Active Claim Extraction, Pre-NLI Invariant Cascade & Enterprise Gating
 * **Atomic Claim Deconstruction**:
   - Model outputs are split into atomic assertions categorized into `TechnicalApi`, `VersionCompatibility`, `TemporalEvent`, or `FactualAssertion`.
-* **Deterministic Lexical & Invariant Checking**:
-  - Propositions are evaluated against retrieved evidence using token-overlap (lexical intersection), negation detection, and configurable policy invariant cascades. Contradictions (e.g. asserting Astra was built by Google instead of OpenAI) are flagged and corrected in sub-millisecond (<0.15ms) deterministic time without neural inference latency or LLM cost.
+* **Pre-NLI Invariant Rule Cascade (<0.15ms)**:
+  - Propositional truth is audited against retrieved evidence using token-overlap, negation detection, and configurable policy invariant cascades. Transparently reported as `Deterministic Lexical & Invariant Rule Engine (Pre-NLI Invariant Cascade)`.
+* **`CodeInvariantChecker` (Enterprise Policy Engine)**:
+  - Audits source code, PR diffs, and configuration manifests against 7 non-negotiable enterprise security and architectural invariants:
+    1. `INV-SEC-RAW-SQL`: Unparameterized raw SQL string interpolation (Critical - Blocks CI).
+    2. `INV-SEC-EVAL-EXEC`: Dynamic code execution / dangerous HTML injection (Critical - Blocks CI).
+    3. `INV-SEC-HARDCODED-SECRET`: Raw bearer tokens, private keys, API secrets (Critical - Blocks CI).
+    4. `INV-ARCH-DAL-LEAK`: Presentation/Controller layers directly invoking raw database connections (High).
+    5. `INV-DEP-OUTDATED-LIB`: Outdated or unmaintained dependencies (Medium).
+    6. `INV-SEC-SSRF-UNVALIDATED`: Unvalidated external URL dispatch (High).
+    7. `INV-REL-UNHANDLED-ERR`: Silent error swallowing / empty catch blocks (High).
+* **Cryptographic Attestation Engine (`AttestationEngine`)**:
+  - Generates verifiable SHA-256 HMAC attestation tokens binding target file, content hash, temporal anchor, evaluated rules, and pass/block verdict for automated CI/CD pipeline gating.
 * **Cryptographic Source Provenance**:
   - Every citation is tied to an immutable SHA-256 chunk hash with sanitized Markdown references.
 
-### 🧠 Pillar 3: 3-Tier Memory & Zero-Pollution Guard
+### 🧠 Pillar 3: 3-Tier Memory & Provider-Calibrated Guard
 * **L1 (Working Buffer)**: In-memory sliding turn window for active conversation context.
 * **L2 (Episodic Session Ledger)**: SQLite database (`chronofact_memory.db`) running in Write-Ahead Logging (WAL) mode with `PRAGMA busy_timeout=5000;`. Stores immutable session turns and live drift audit logs.
 * **L3 (Semantic Truth Dossier)**: Persistent project invariants (tech stack choices, database schemas, architectural rules).
+* **Adaptive `MemoryCalibrator`**:
+  - Eliminates brittle hardcoded similarity thresholds. Provides provider-calibrated distributions for OpenAI `text-embedding-3`, BGE, Cohere, and local FastEmbed embeddings.
+  - Dynamically calculates relative similarity cutoffs ($\mu + k \cdot \sigma$) across candidate distributions to accommodate varying vector space densities.
 * **The Zero-Pollution Guard**:
   - Queries are evaluated using token-overlap and keyword relevance gating against stored memories.
-  - **Invariant**: If the user asks about an unrelated topic (e.g. quantum physics in an e-commerce project), the query does not match project entity tokens, and **exactly 0 memory tokens are injected**, preventing cross-domain degradation.
+  - **Invariant**: If the user asks about an unrelated topic, exactly 0 memory tokens are injected, preventing cross-domain degradation.
 
 ### ✂️ Pillar 4: Token Context Bloat & Cost Bleed Prevention (mcplex Technology)
-* **TF-IDF Tool Router**:
-  - Agents often register 20-50 MCP tools, consuming 3,000-8,000 prompt tokens per turn just for tool schemas.
-  - ChronoFact tokenizes the user query into unigrams, computes TF-IDF vectors, and calculates cosine similarity against registered tool signatures.
+* **Intent-Boosted TF-IDF Tool Router**:
+  - Solves the Lexical Mismatch Problem: When users speak idiomatically ("Why won't this compile?", "There's a bug on line 42"), an intent-aware domain dictionary boosts relevant tools ($+0.35$ relevance boost) without requiring exact unigram overlap.
+  - **Always-Retain Pinning**: Critical execution primitives (`read_file`, `terminal_exec`, `run_command`) can be permanently pinned so aggressive token pruning never strips foundational capabilities.
   - Prunes irrelevant schemas down to `top_k` (typically 3-4 tools), achieving **70%-91% token savings per turn**.
 * **Deterministic Prompt Cache Prefix Alignment**:
   - Formats static system instructions, immutable invariant anchors (`[CHRONOFACT_CACHE_ANCHOR:v1:...]`), and stable tool schemas into the exact prefix of the prompt.
@@ -97,7 +112,7 @@ Large Language Models deployed in agentic environments suffer from four critical
 
 Self-assessed defensive engineering controls verified via automated test suite in `docs/SECURITY_AUDIT.md`:
 1. **SSRF Outbound Firewall**: Blocks private networks (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 unique local (`fc00::/7`), loopback (`127.0.0.1`), and AWS/GCP cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`).
-2. **Indirect Prompt Injection Shield**: Quarantines retrieved web data within `<untrusted_external_evidence>` XML boundaries and defangs injection directives (e.g. `ignore previous instructions`, `system override`).
+2. **Signed Context Envelopes**: Injects external web evidence inside demarcated `<untrusted_external_evidence envelope_id="..." hmac_nonce="...">` envelopes with boundary escape-tag defanging to defeat indirect prompt injection.
 3. **100% Prepared SQL Statements**: Zero raw SQL string interpolation. All queries use parameterized queries (`rusqlite::params!`).
 4. **Filesystem Path Escaping Defense**: Sandboxes local file accesses using canonical path checking to prevent `../` directory traversal.
 5. **Zero Secret Leak Guarantee**: Verified by automated regex scanning: 0 API keys, 0 private credentials, and 0 secret tokens in the repository.
@@ -133,11 +148,30 @@ Place the following in your Antigravity MCP configuration (`mcp_config.json`):
 | `chronofact_temporal_check` | `model_id`, `query` | Calculates knowledge cutoff delta and generates temporal calibration anchor. |
 | `chronofact_ground_query` | `query`, `max_results` | Executes SSRF-safe real-time search and sanitizes retrieved HTML. |
 | `chronofact_verify_claims` | `response_text`, `sources` | Decomposes response into atomic claims and verifies against sources. |
+| `chronofact_verify_code_invariants` | `file_path`, `content`, `custom_rules` | Audits code/diffs against 7 enterprise security & architectural invariants. |
+| `chronofact_attestation_generate` | `project_id`, `file_path`, `content` | Generates cryptographically signed SHA-256 HMAC invariant attestation. |
 | `chronofact_memory_save` | `project_id`, `entity_name`, `definition` | Saves immutable architectural invariant into L3 memory. |
 | `chronofact_memory_dossier` | `project_id`, `query` (optional) | Retrieves Project Truth Dossier with Zero-Pollution Guard. |
 | `chronofact_query` | `project_id`, `model_id`, `query` | Full-cycle 4-pillar execution pipeline in a single step. |
 | `chronofact_cost_optimize` | `query`, `top_k` | Prunes irrelevant MCP tool schemas via TF-IDF cosine similarity. |
 | `chronofact_cost_metrics` | *(none)* | Returns real-time tokens saved, USD savings, and tool cache hit rates. |
+
+---
+
+## 🚦 Enterprise CI/CD Pipeline Gate (`check-ci`)
+
+ChronoFact includes a headless CLI command for pre-commit hooks, GitHub Actions, and deployment pipelines:
+
+```bash
+# Evaluate a file or PR diff against enterprise invariants
+chronofact check-ci --path src/main.rs
+
+# Evaluate and generate a signed cryptographic attestation token
+chronofact check-ci --path src/main.rs --attest
+```
+
+* **Exit Code 0:** All critical & high enterprise invariants satisfied.
+* **Exit Code 1:** Invariants violated (e.g. unparameterized raw SQL, raw secrets, layer leaks). Deployment blocked immediately.
 
 ---
 
