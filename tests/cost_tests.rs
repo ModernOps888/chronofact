@@ -560,10 +560,10 @@ fn test_cache_isolated_prompt_prefix_floor_guarantee() {
         "Check another query",
     );
 
-    // 1. Static prefix estimated tokens must clear the 1,024 floor
+    // 1. Static prefix estimated tokens must clear the 1,088 floor
     assert!(
         prompt_turn_1.static_prefix_estimated_tokens >= PROMPT_CACHE_MINIMUM_TOKEN_FLOOR,
-        "Static prefix must clear provider prompt caching floor (>= 1024), got {}",
+        "Static prefix must clear provider prompt caching floor (>= 1088), got {}",
         prompt_turn_1.static_prefix_estimated_tokens
     );
     assert_eq!(
@@ -573,7 +573,21 @@ fn test_cache_isolated_prompt_prefix_floor_guarantee() {
 
     // 2. Standardized context rules must be injected to bridge deficit
     assert!(prompt_turn_1.static_cache_prefix.contains("[STANDARDIZED_PROJECT_CACHE_CONTEXT]"));
-    assert!(prompt_turn_1.static_cache_prefix.contains("PROVIDER_CACHE_POLICY: MIN_FLOOR_1024_TOKENS"));
+    assert!(prompt_turn_1.static_cache_prefix.contains("PROVIDER_CACHE_POLICY: MIN_FLOOR_1088_TOKENS"));
+
+    // 2b. Test StatelessSingleShot does NOT pad artificially
+    let single_shot = CostTracker::assemble_cache_aligned_prompt_with_mode(
+        project_id,
+        static_system,
+        static_schemas,
+        "<chronofact_temporal_anchor>\nCURRENT_DATE: 2026-10-07\n</chronofact_temporal_anchor>",
+        "Evidence: minimal chunk.",
+        "One-shot CI query",
+        chronofact::cost::tracker::SessionMode::StatelessSingleShot,
+    );
+    assert!(!single_shot.cache_aligned);
+    assert!(!single_shot.static_cache_prefix.contains("[STANDARDIZED_PROJECT_CACHE_CONTEXT]"));
+    assert!(single_shot.static_prefix_estimated_tokens < PROMPT_CACHE_MINIMUM_TOKEN_FLOOR);
 
     // 3. Static prefix must remain 100% byte-for-byte identical across turns
     assert_eq!(

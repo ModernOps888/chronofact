@@ -123,6 +123,27 @@ impl CostTracker {
         dynamic_retrieved_evidence: &str,
         user_query: &str,
     ) -> CacheOptimizedPrompt {
+        Self::assemble_cache_aligned_prompt_with_mode(
+            project_id,
+            static_system_instructions,
+            static_schemas_json,
+            temporal_anchor_header,
+            dynamic_retrieved_evidence,
+            user_query,
+            SessionMode::InteractiveMultiTurn,
+        )
+    }
+
+    /// Assembles an isolated prompt with explicit SessionMode support (MultiTurn vs StatelessSingleShot).
+    pub fn assemble_cache_aligned_prompt_with_mode(
+        project_id: &str,
+        static_system_instructions: &str,
+        static_schemas_json: &str,
+        temporal_anchor_header: &str,
+        dynamic_retrieved_evidence: &str,
+        user_query: &str,
+        session_mode: SessionMode,
+    ) -> CacheOptimizedPrompt {
         let anchor = Self::generate_cache_aligned_prefix(project_id);
         
         let mut static_cache_prefix = format!(
@@ -137,7 +158,7 @@ impl CostTracker {
         );
 
         let current_tokens = static_cache_prefix.len() / 4;
-        if current_tokens < PROMPT_CACHE_MINIMUM_TOKEN_FLOOR {
+        if session_mode == SessionMode::InteractiveMultiTurn && current_tokens < PROMPT_CACHE_MINIMUM_TOKEN_FLOOR {
             let deficit = PROMPT_CACHE_MINIMUM_TOKEN_FLOOR - current_tokens;
             let padding = generate_standardized_cache_context_rules(project_id, deficit);
             static_cache_prefix.push_str(&padding);
@@ -158,7 +179,13 @@ impl CostTracker {
         let cache_boundary_marker = "\n<!-- CACHE_BOUNDARY_EPHEMERAL -->\n".to_string();
         let full_assembled_prompt = format!("{}{}{}", static_cache_prefix, cache_boundary_marker, dynamic_context_suffix);
 
-        let static_prefix_estimated_tokens = (static_cache_prefix.len() / 4).max(PROMPT_CACHE_MINIMUM_TOKEN_FLOOR);
+        let static_prefix_estimated_tokens = (static_cache_prefix.len() / 4).max(
+            if session_mode == SessionMode::InteractiveMultiTurn {
+                PROMPT_CACHE_MINIMUM_TOKEN_FLOOR
+            } else {
+                1
+            }
+        );
         let dynamic_suffix_estimated_tokens = (dynamic_context_suffix.len() / 4).max(1);
 
         CacheOptimizedPrompt {
@@ -169,24 +196,41 @@ impl CostTracker {
             full_assembled_prompt,
             static_prefix_estimated_tokens,
             dynamic_suffix_estimated_tokens,
-            cache_aligned: true,
+            cache_aligned: session_mode == SessionMode::InteractiveMultiTurn,
+            session_mode,
         }
     }
 }
 
+/// Execution mode governing whether prompt cache padding is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionMode {
+    /// Enforces 1,088-token cache floor (1,024 + 64-token BPE discrepancy safety margin) for multi-turn prompt caching.
+    InteractiveMultiTurn,
+    /// Stateless one-shot or headless CI execution; skips artificial padding to minimize token consumption.
+    StatelessSingleShot,
+}
+
+impl Default for SessionMode {
+    fn default() -> Self {
+        SessionMode::InteractiveMultiTurn
+    }
+}
+
 /// Minimum token threshold required by frontier providers (Anthropic Claude 3.5/3.7/Opus/Sonnet 5.5 and OpenAI GPT-4o/o1/o3)
-/// before server-side prompt caching engages.
-pub const PROMPT_CACHE_MINIMUM_TOKEN_FLOOR: usize = 1024;
+/// before server-side prompt caching engages. Padded to 1,088 tokens (1,024 base floor + 64-token safety margin)
+/// to guarantee crossing the threshold across divergent BPE tokenizers (OpenAI o200k/cl100k vs Anthropic Claude BPE).
+pub const PROMPT_CACHE_MINIMUM_TOKEN_FLOOR: usize = 1088;
 
 /// Generates byte-stable standardized project context rules to guarantee that the static cache prefix
-/// clears the minimum provider prompt caching floor (1,024 tokens).
+/// clears the minimum provider prompt caching floor (1,088 tokens with 64-token safety buffer).
 pub fn generate_standardized_cache_context_rules(project_id: &str, deficit_tokens: usize) -> String {
     let mut buffer = String::new();
     buffer.push_str(&format!(
         "\n\n[STANDARDIZED_PROJECT_CACHE_CONTEXT]\n\
          PROJECT_IDENTIFIER: {}\n\
          EPISTEMIC_TIER: L3_INVARIANT_STATIC\n\
-         PROVIDER_CACHE_POLICY: MIN_FLOOR_1024_TOKENS\n\
+         PROVIDER_CACHE_POLICY: MIN_FLOOR_1088_TOKENS_WITH_64_SAFETY_BUFFER\n\
          SYSTEM_INVARIANTS:\n\
          - INVARIANT_1: All factual claims must be anchored against current epistemic verification.\n\
          - INVARIANT_2: Prohibit unearned concessions and sycophantic capitulation to invalidated user claims.\n\
@@ -224,5 +268,6 @@ pub struct CacheOptimizedPrompt {
     pub static_prefix_estimated_tokens: usize,
     pub dynamic_suffix_estimated_tokens: usize,
     pub cache_aligned: bool,
+    pub session_mode: SessionMode,
 }
 

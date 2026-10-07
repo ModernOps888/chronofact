@@ -245,3 +245,37 @@ async fn test_mcp_server_gateway_find_tools_execution() {
         .collect();
     assert!(matched_names.contains(&"chronofact_verify_claims"));
 }
+
+#[test]
+fn test_gateway_circuit_breaker_tripping_and_cooldown() {
+    use chronofact::mcp::GatewayCircuitBreaker;
+    use std::time::Duration;
+
+    let mut cb = GatewayCircuitBreaker::default();
+    assert!(!cb.is_open(Duration::from_secs(30)));
+    assert_eq!(cb.consecutive_timeouts, 0);
+
+    // Strike 1
+    assert!(!cb.record_timeout(3));
+    assert_eq!(cb.consecutive_timeouts, 1);
+    assert!(!cb.is_open(Duration::from_secs(30)));
+
+    // Strike 2
+    assert!(!cb.record_timeout(3));
+    assert_eq!(cb.consecutive_timeouts, 2);
+    assert!(!cb.is_open(Duration::from_secs(30)));
+
+    // Strike 3 -> Tripped!
+    assert!(cb.record_timeout(3));
+    assert_eq!(cb.consecutive_timeouts, 3);
+    assert!(cb.is_open(Duration::from_secs(30)));
+
+    // While open, is_open with 0 cooldown would not be open, but with 30s it is open
+    assert!(cb.is_open(Duration::from_secs(30)));
+
+    // Successful execution resets circuit breaker
+    cb.record_success();
+    assert_eq!(cb.consecutive_timeouts, 0);
+    assert!(!cb.is_open(Duration::from_secs(30)));
+}
+

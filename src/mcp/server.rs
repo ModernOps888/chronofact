@@ -12,6 +12,41 @@ use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 
+use std::collections::HashMap;
+
+/// Circuit breaker state tracking consecutive upstream timeouts and open/closed state.
+#[derive(Debug, Clone, Default)]
+pub struct GatewayCircuitBreaker {
+    pub consecutive_timeouts: u32,
+    pub tripped_at: Option<std::time::Instant>,
+}
+
+impl GatewayCircuitBreaker {
+    pub fn is_open(&self, cooldown: std::time::Duration) -> bool {
+        if let Some(tripped) = self.tripped_at {
+            if tripped.elapsed() < cooldown {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn record_success(&mut self) {
+        self.consecutive_timeouts = 0;
+        self.tripped_at = None;
+    }
+
+    pub fn record_timeout(&mut self, threshold: u32) -> bool {
+        self.consecutive_timeouts += 1;
+        if self.consecutive_timeouts >= threshold {
+            self.tripped_at = Some(std::time::Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct McpServer {
     model_registry: Arc<ModelRegistry>,
     scanner: Arc<TemporalScanner>,
@@ -24,6 +59,7 @@ pub struct McpServer {
     cost_tracker: Arc<CostTracker>,
     sanitizer: Arc<ContentSanitizer>,
     gateway: Option<Arc<RwLock<GatewayMultiplexer>>>,
+    circuit_breakers: Arc<RwLock<HashMap<String, GatewayCircuitBreaker>>>,
 }
 
 impl McpServer {
@@ -47,6 +83,7 @@ impl McpServer {
             cost_tracker: Arc::new(CostTracker::default()),
             sanitizer: Arc::new(ContentSanitizer::new()),
             gateway,
+            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -744,16 +781,17 @@ impl McpServer {
         }
 
         // 2. Read-Only Gating for Cache Check: only cache tools that declare readOnlyHint: true
-        let (is_read_only, canonical_tool_name) = {
+        let (is_read_only, canonical_tool_name, server_name) = {
             let gw_guard = gw.read().await;
             let ro = gw_guard.get_tool_definition(name).map(|t| t.is_read_only()).unwrap_or(false);
+            let srv = gw_guard.find_tool_server(name).unwrap_or_else(|| "default".to_string());
             let canonical = if let Some(server) = gw_guard.find_tool_server(name) {
                 let bare = name.split_once('/').map(|(_, b)| b).unwrap_or(name);
                 format!("{}/{}", server, bare)
             } else {
                 name.to_string()
             };
-            (ro, canonical)
+            (ro, canonical, srv)
         };
 
         if is_read_only {
@@ -770,14 +808,55 @@ impl McpServer {
             }
         }
 
+        // Circuit breaker check: fail-fast if upstream server has tripped
+        {
+            let cb_guard = self.circuit_breakers.read().await;
+            if let Some(cb) = cb_guard.get(&server_name) {
+                if cb.is_open(std::time::Duration::from_secs(30)) {
+                    return Err(format!(
+                        "Gateway circuit breaker OPEN for server '{}' ({} consecutive timeouts). Requests throttled for 30s.",
+                        server_name, cb.consecutive_timeouts
+                    ));
+                }
+            }
+        }
+
         // 3. Dispatch to Upstream Server (resolve target under ephemeral lock to avoid holding RwLock across network await)
         let target = {
             let gw_guard = gw.read().await;
             gw_guard.resolve_tool_execution(name, Some(args.clone()))
                 .map_err(|e| format!("Failed to route tool '{}': {}", name, e))?
         };
-        let upstream_result = target.execute().await
-            .map_err(|e| format!("Upstream tool execution error: {}", e))?;
+
+        let exec_future = target.execute();
+        let upstream_result = match tokio::time::timeout(std::time::Duration::from_secs(10), exec_future).await {
+            Ok(Ok(res)) => {
+                let mut cb_guard = self.circuit_breakers.write().await;
+                if let Some(cb) = cb_guard.get_mut(&server_name) {
+                    cb.record_success();
+                }
+                res
+            }
+            Ok(Err(e)) => {
+                return Err(format!("Upstream tool execution error: {}", e));
+            }
+            Err(_) => {
+                let mut cb_guard = self.circuit_breakers.write().await;
+                let cb = cb_guard.entry(server_name.clone()).or_default();
+                let tripped = cb.record_timeout(3);
+                if tripped {
+                    return Err(format!(
+                        "Upstream tool execution timed out after 10s. Circuit breaker TRIPPED for server '{}' (3 consecutive timeouts).",
+                        server_name
+                    ));
+                } else {
+                    return Err(format!(
+                        "Upstream tool execution timed out after 10s on server '{}' (strike {}/3).",
+                        server_name, cb.consecutive_timeouts
+                    ));
+                }
+            }
+        };
 
         // 4. Outbound Cognitive Epistemic Verification (Deterministic Lexical & Invariant Check)
         let verification_info = if verify_output {

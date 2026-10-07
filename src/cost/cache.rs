@@ -83,6 +83,19 @@ impl ToolResponseCache {
                     .unwrap_or(0);
                 let len = meta.len();
                 hasher.update(format!(":canonical_path={}:mtime={}:file_size={}", canon_path, mtime, len).as_bytes());
+
+                // Sub-Second Mutation & Low-Granularity Filesystem Protection:
+                // In virtualized environments (WSL2, Docker VirtioFS, NFS, FAT32), mtime resolution
+                // often truncates to 1-second boundaries. Read and hash the initial 512-byte header/content prefix
+                // to detect rapid sub-second modifications even if mtime has not yet ticked.
+                if let Ok(mut f) = std::fs::File::open(&val) {
+                    use std::io::Read;
+                    let mut head_buf = [0u8; 512];
+                    if let Ok(n) = f.read(&mut head_buf) {
+                        hasher.update(b":head512=");
+                        hasher.update(&head_buf[..n]);
+                    }
+                }
             } else {
                 hasher.update(format!(":canonical_path={}", canon_path).as_bytes());
             }
