@@ -86,4 +86,41 @@ impl MemoryCalibrator {
         filtered.truncate(max_top_k);
         filtered
     }
+
+    /// Computes a percentile-based rank threshold from candidate similarity scores.
+    /// E.g. percentile = 0.70 means only scores in the top 30% are retained.
+    pub fn calculate_percentile_threshold(scores: &[f32], percentile: f32) -> f32 {
+        if scores.is_empty() {
+            return 0.5;
+        }
+        let mut sorted = scores.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let p_clamped = percentile.clamp(0.0, 1.0);
+        let index = ((sorted.len() as f32 - 1.0) * p_clamped).round() as usize;
+        sorted[index]
+    }
+
+    /// Filters and ranks candidate memory entities using percentile-based ranking.
+    pub fn filter_by_percentile<T: Clone>(
+        items: Vec<(T, f32)>,
+        percentile: f32,
+        max_top_k: usize,
+    ) -> Vec<(T, f32)> {
+        if items.is_empty() {
+            return Vec::new();
+        }
+
+        let scores: Vec<f32> = items.iter().map(|(_, s)| *s).collect();
+        let rank_threshold = Self::calculate_percentile_threshold(&scores, percentile);
+
+        let mut filtered: Vec<(T, f32)> = items
+            .into_iter()
+            .filter(|(_, s)| *s >= rank_threshold)
+            .collect();
+
+        filtered.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        filtered.truncate(max_top_k);
+        filtered
+    }
 }

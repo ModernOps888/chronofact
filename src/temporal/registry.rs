@@ -442,13 +442,15 @@ impl ModelRegistry {
 
     /// Checks for environment variable overrides or local configuration files to prevent cutoff drift.
     pub fn load_environmental_overrides(&mut self) {
-        // 1. Check CHRONOFACT_MODELS_OVERRIDE env var
-        if let Ok(env_val) = std::env::var("CHRONOFACT_MODELS_OVERRIDE") {
-            let trimmed = env_val.trim();
-            if trimmed.starts_with('[') || trimmed.starts_with('{') {
-                let _ = self.load_from_json(trimmed);
-            } else if std::path::Path::new(trimmed).exists() {
-                let _ = self.load_from_file(trimmed);
+        // 1. Check CHRONOFACT_MODELS_OVERRIDE / CHRONOFACT_MODELS_CONFIG / CHRONOFACT_MODELS_JSON
+        for env_key in &["CHRONOFACT_MODELS_OVERRIDE", "CHRONOFACT_MODELS_CONFIG", "CHRONOFACT_MODELS_JSON"] {
+            if let Ok(env_val) = std::env::var(env_key) {
+                let trimmed = env_val.trim();
+                if trimmed.starts_with('[') || trimmed.starts_with('{') {
+                    let _ = self.load_from_json(trimmed);
+                } else if std::path::Path::new(trimmed).exists() {
+                    let _ = self.load_from_file(trimmed);
+                }
             }
         }
 

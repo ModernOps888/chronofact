@@ -54,7 +54,7 @@ pub struct RoutingResult {
 pub struct TfidfToolRouter {
     default_threshold: f32,
     intent_dictionary: HashMap<String, Vec<String>>,
-    pinned_names: HashSet<String>,
+    pub always_retained: HashSet<String>,
 }
 
 impl Default for TfidfToolRouter {
@@ -106,19 +106,39 @@ impl TfidfToolRouter {
         Self {
             default_threshold,
             intent_dictionary,
-            pinned_names: HashSet::new(),
+            always_retained: HashSet::new(),
         }
     }
 
-    pub fn with_pinned_tools(mut self, pinned: &[&str]) -> Self {
-        for p in pinned {
-            self.pinned_names.insert(p.to_string());
+    /// Pre-configures mandatory always-retained foundational operational tools.
+    pub fn with_foundational_pins(mut self) -> Self {
+        for tool in &["read_file", "write_file", "view_file", "replace_file_content", "terminal_exec", "run_command"] {
+            self.always_retained.insert(tool.to_string());
         }
         self
     }
 
+    /// Adds a list of tools that must never be pruned.
+    pub fn with_always_retained(mut self, retained: &[&str]) -> Self {
+        for p in retained {
+            self.always_retained.insert(p.to_string());
+        }
+        self
+    }
+
+    /// Backwards-compatible alias for with_always_retained.
+    pub fn with_pinned_tools(self, pinned: &[&str]) -> Self {
+        self.with_always_retained(pinned)
+    }
+
+    /// Pins an individual tool name to always be retained.
+    pub fn add_always_retained(&mut self, tool_name: &str) {
+        self.always_retained.insert(tool_name.to_string());
+    }
+
+    /// Backwards-compatible alias for add_always_retained.
     pub fn pin_tool(&mut self, tool_name: &str) {
-        self.pinned_names.insert(tool_name.to_string());
+        self.add_always_retained(tool_name);
     }
 
     pub fn route(
@@ -200,7 +220,7 @@ impl TfidfToolRouter {
             })
             .filter(|(i, score)| {
                 let tool = &tools[*i];
-                let is_pinned = tool.is_pinned || self.pinned_names.contains(&tool.name);
+                let is_pinned = tool.is_pinned || self.always_retained.contains(&tool.name);
                 is_pinned || *score >= threshold
             })
             .collect();
@@ -214,7 +234,7 @@ impl TfidfToolRouter {
 
         // 1. Add all pinned tools first
         for (i, tool) in tools.iter().enumerate() {
-            if tool.is_pinned || self.pinned_names.contains(&tool.name) {
+            if tool.is_pinned || self.always_retained.contains(&tool.name) {
                 let score = scored.iter().find(|(idx, _)| *idx == i).map(|(_, s)| *s).unwrap_or(1.0);
                 selected_indices.push((i, score));
                 added_indices.insert(i);
@@ -232,9 +252,10 @@ impl TfidfToolRouter {
             }
         }
 
-        // 3. Fallback: If nothing was matched at all and no pinned tools present
+        // 3. Fallback Semantic Gating: If unigram extraction yields an empty intersection across all tools
+        // and no pinned tools are present, fall back to retaining top_k tools rather than leaving the agent blind
         if selected_indices.is_empty() {
-            for (i, _) in tools.iter().enumerate().take(2.min(tools.len())) {
+            for (i, _) in tools.iter().enumerate().take(top_k.min(tools.len())) {
                 selected_indices.push((i, 0.5));
             }
         }

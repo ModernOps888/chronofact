@@ -123,3 +123,88 @@ fn test_cost_tracker_metrics_and_usd_calculation() {
     let anchor = CostTracker::generate_cache_aligned_prefix("my-test-project");
     assert!(anchor.contains("<prompt_cache_anchor project=\"my-test-project\""));
 }
+
+#[test]
+fn test_idiomatic_build_failing_query_retains_terminal_and_file_tools() {
+    let router = TfidfToolRouter::default();
+
+    let tools = vec![
+        ToolCandidate::new("search_web", "Performs real-time web search for frontier technical topics", "antigravity", vec![]),
+        ToolCandidate::new("terminal_exec", "Executes shell commands in a terminal process", "core", vec![]),
+        ToolCandidate::new("read_file", "Reads file contents from disk filesystem", "core", vec![]),
+        ToolCandidate::new("database_migrate", "Runs postgres sql migration scripts", "db", vec![]),
+        ToolCandidate::new("oauth_token_refresh", "Refreshes JWT oauth2 security tokens", "auth", vec![]),
+    ];
+
+    // Idiomatic query with zero unigram overlap with "terminal" or "read" or "file"
+    let query = "Why is the build failing with error code 127?";
+    let result = router.route(query, &tools, 3, None);
+
+    let selected_names: Vec<&str> = result.selected_tools.iter().map(|s| s.tool.name.as_str()).collect();
+    assert!(
+        selected_names.contains(&"terminal_exec") || selected_names.contains(&"read_file"),
+        "Intent-boosted dictionary must retain terminal or file tools on build/failing/error: got {:?}",
+        selected_names
+    );
+}
+
+#[test]
+fn test_always_retained_pinning_guarantees_inclusion() {
+    let router = TfidfToolRouter::default()
+        .with_always_retained(&["terminal_exec", "read_file"]);
+
+    let tools = vec![
+        ToolCandidate::new("search_web", "Performs web search", "web", vec![]),
+        ToolCandidate::new("terminal_exec", "Executes shell commands", "core", vec![]),
+        ToolCandidate::new("read_file", "Reads file contents", "core", vec![]),
+        ToolCandidate::new("database_migrate", "Database migrations", "db", vec![]),
+    ];
+
+    // Even with a very high threshold (0.95) and unrelated query
+    let query = "Look up weather in London";
+    let result = router.route(query, &tools, 3, Some(0.95));
+
+    let selected_names: Vec<&str> = result.selected_tools.iter().map(|s| s.tool.name.as_str()).collect();
+    assert!(selected_names.contains(&"terminal_exec"));
+    assert!(selected_names.contains(&"read_file"));
+}
+
+#[test]
+fn test_fallback_semantic_gating_when_zero_intersection() {
+    let router = TfidfToolRouter::default();
+
+    let tools = vec![
+        ToolCandidate::new("tool_alpha", "Does arbitrary operation alpha", "srv", vec![]),
+        ToolCandidate::new("tool_beta", "Does arbitrary operation beta", "srv", vec![]),
+        ToolCandidate::new("tool_gamma", "Does arbitrary operation gamma", "srv", vec![]),
+    ];
+
+    // Query with zero unigram or intent overlap
+    let query = "qwerty asdf zxcvbnm";
+    let result = router.route(query, &tools, 2, Some(0.80));
+
+    // Fallback must retain top_k tools rather than leaving the agent blind
+    assert_eq!(result.selected_tools.len(), 2);
+}
+
+#[test]
+fn test_memory_calibrator_percentile_ranking() {
+    use chronofact::MemoryCalibrator;
+
+    let scores = vec![0.10, 0.35, 0.50, 0.72, 0.88, 0.95];
+    let p70 = MemoryCalibrator::calculate_percentile_threshold(&scores, 0.70);
+    assert!(p70 >= 0.70 && p70 <= 0.88);
+
+    let items = vec![
+        ("item_1", 0.10),
+        ("item_2", 0.35),
+        ("item_3", 0.50),
+        ("item_4", 0.72),
+        ("item_5", 0.88),
+        ("item_6", 0.95),
+    ];
+    let ranked = MemoryCalibrator::filter_by_percentile(items, 0.60, 3);
+    assert!(!ranked.is_empty());
+    assert!(ranked.len() <= 3);
+    assert_eq!(ranked[0].0, "item_6");
+}
