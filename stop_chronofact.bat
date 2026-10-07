@@ -16,7 +16,5 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr /R ":5173 .*LISTENING"') do (
     taskkill /F /PID %%a >nul 2>&1
 )
 
-:: Kill any orphan chronofact.exe processes
-taskkill /F /IM chronofact.exe >nul 2>&1
-
-echo [OK] All ChronoFact services have been stopped cleanly.
+:: Finished - MCP stdio servers are preserved
+echo [OK] All ChronoFact network services have been stopped cleanly.

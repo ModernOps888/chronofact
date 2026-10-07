@@ -12,9 +12,16 @@ if (-not $Quiet) {
     Write-Host "==========================================================" -ForegroundColor Cyan
 }
 
+$baseDir = if ($PSScriptRoot) { $PSScriptRoot } else { "." }
+
 # Resolve the best release binary
-$binPath = "c:\chronofact\bin\chronofact.exe"
-$targetBin = "c:\chronofact\target\release\chronofact.exe"
+$binDir = Join-Path $baseDir "bin"
+$binPath = Join-Path $binDir "chronofact.exe"
+$targetBin = Join-Path $baseDir "target\release\chronofact.exe"
+
+if (-not (Test-Path $binDir)) {
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+}
 
 if (Test-Path $targetBin) {
     try {
@@ -22,7 +29,7 @@ if (Test-Path $targetBin) {
     } catch {}
 } elseif (-not (Test-Path $binPath)) {
     if (-not $Quiet) { Write-Host "Release binary not found. Compiling now..." -ForegroundColor Yellow }
-    cargo build --release --manifest-path "c:\chronofact\Cargo.toml"
+    cargo build --release --manifest-path (Join-Path $baseDir "Cargo.toml")
     try {
         Copy-Item $targetBin $binPath -Force -ErrorAction SilentlyContinue
     } catch {}
@@ -36,7 +43,7 @@ $port3030 = Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction Sile
 if (-not $port3030) {
     if (-not $Quiet) { Write-Host "`n[1/2] Launching Rust Epistemic Engine on http://127.0.0.1:3030 ..." -ForegroundColor Green }
     $windowStyle = if ($Quiet) { "Hidden" } else { "Minimized" }
-    Start-Process -FilePath $exeToRun -ArgumentList "serve", "--port", "3030" -WorkingDirectory "c:\chronofact" -WindowStyle $windowStyle
+    Start-Process -FilePath $exeToRun -ArgumentList "serve", "--port", "3030" -WorkingDirectory $baseDir -WindowStyle $windowStyle
     Start-Sleep -Seconds 1
 } else {
     if (-not $Quiet) { Write-Host "`n[1/2] Rust Epistemic Engine already listening on http://127.0.0.1:3030" -ForegroundColor Green }
@@ -47,7 +54,8 @@ $port5173 = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction Sile
 if (-not $port5173) {
     if (-not $Quiet) { Write-Host "[2/2] Launching React / TypeScript Cockpit on http://localhost:5173 ..." -ForegroundColor Green }
     $frontWindowStyle = if ($Quiet) { "Hidden" } else { "Minimized" }
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile", "-Command", "Set-Location 'c:\chronofact\frontend'; npm run dev" -WindowStyle $frontWindowStyle
+    $frontDir = Join-Path $baseDir "frontend"
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile", "-Command", "Set-Location '$frontDir'; npm run dev" -WindowStyle $frontWindowStyle
     Start-Sleep -Seconds 2
 } else {
     if (-not $Quiet) { Write-Host "[2/2] React / TypeScript Cockpit already active on http://localhost:5173" -ForegroundColor Green }
