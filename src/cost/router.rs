@@ -523,14 +523,17 @@ pub fn is_conceptual_or_abstract_query(query: &str) -> bool {
         }
     }
 
-    // Additional conceptual substrings
+    // Additional generalized conceptual patterns
     const CONCEPTUAL_SUBSTRINGS: &[&str] = &[
         "difference between",
-        "how the rust borrow checker handles",
-        "how garbage collection works",
         "mental model",
         "theoretical",
         "conceptually",
+        "best practices for",
+        "principles of",
+        "architecture of",
+        "mechanics of",
+        "high level overview",
     ];
     for sub in CONCEPTUAL_SUBSTRINGS {
         if q.contains(sub) {

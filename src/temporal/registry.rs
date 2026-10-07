@@ -267,6 +267,17 @@ impl ModelRegistry {
                 notes: "Google fast multimodal frontier model.".to_string(),
             },
             ModelHorizon {
+                model_id: "gemini-3-8-pro".to_string(),
+                display_name: "Gemini 3.8 Pro".to_string(),
+                vendor: "Google".to_string(),
+                public_release_date: NaiveDate::from_ymd_opt(2026, 8, 15).unwrap(),
+                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                is_frontier: true,
+                status: "Active (Frontier Flagship)".to_string(),
+                notes: "Google frontier multimodal reasoning flagship with deep code synthesis.".to_string(),
+            },
+            ModelHorizon {
                 model_id: "gemini-2-0-pro".to_string(),
                 display_name: "Gemini 2.0 Pro".to_string(),
                 vendor: "Google".to_string(),
