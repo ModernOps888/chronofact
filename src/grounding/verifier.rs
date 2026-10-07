@@ -243,12 +243,11 @@ impl FactVerifier {
                         || statement_lower.contains("added")
                         || statement_lower.contains("available")
                         || statement_lower.contains("compatible"))
+                    && (matches >= 2 || overlap_ratio >= 0.25)
                 {
-                    if matches >= 2 || overlap_ratio >= 0.25 {
-                        contradiction_detected = true;
-                        contradiction_source = source.id.clone();
-                        break;
-                    }
+                    contradiction_detected = true;
+                    contradiction_source = source.id.clone();
+                    break;
                 }
             }
         }

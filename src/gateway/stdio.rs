@@ -227,7 +227,7 @@ impl StdioConnection {
             Ok::<(), std::io::Error>(())
         };
 
-        if let Err(_) = tokio::time::timeout(Duration::from_secs(5), write_fut).await {
+        if tokio::time::timeout(Duration::from_secs(5), write_fut).await.is_err() {
             self.remove_pending(id);
             return Err(anyhow::anyhow!(
                 "Timed out writing to stdin of '{}' (child process may be unresponsive)",

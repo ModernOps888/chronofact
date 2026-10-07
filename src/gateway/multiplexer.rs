@@ -27,7 +27,7 @@ pub enum ToolExecutionTarget {
     Http {
         server_name: String,
         url: String,
-        config: UpstreamServerConfig,
+        config: Box<UpstreamServerConfig>,
         bare_name: String,
         arguments: Option<serde_json::Value>,
         client: reqwest::Client,
@@ -428,7 +428,7 @@ impl GatewayMultiplexer {
             Ok(ToolExecutionTarget::Http {
                 server_name: server_name.clone(),
                 url: url.clone(),
-                config: server.config.clone(),
+                config: Box::new(server.config.clone()),
                 bare_name,
                 arguments,
                 client: self.http_client.clone(),

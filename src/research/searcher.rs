@@ -64,10 +64,7 @@ impl SearchEngine {
             }
         };
 
-        let html_text = match response.text().await {
-            Ok(t) => t,
-            Err(_) => String::new(),
-        };
+        let html_text = response.text().await.unwrap_or_default();
         let document = Html::parse_document(&html_text);
 
         let result_selector = Selector::parse(".result").map_err(|e| format!("{:?}", e))?;

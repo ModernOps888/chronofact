@@ -101,10 +101,10 @@ impl TemporalScanner {
         for mat in self.software_intent_regex.find_iter(query) {
             has_software_intent = true;
             let kw = mat.as_str().to_lowercase();
-            if kw.contains("breaking") || kw.contains("migrat") || kw.contains("upgrade") {
-                if !temporal_keywords.contains(&kw) {
-                    temporal_keywords.push(kw);
-                }
+            if (kw.contains("breaking") || kw.contains("migrat") || kw.contains("upgrade"))
+                && !temporal_keywords.contains(&kw)
+            {
+                temporal_keywords.push(kw);
             }
         }
 
