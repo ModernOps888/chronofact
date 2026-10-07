@@ -7,10 +7,11 @@ import { MemoryRadar } from './components/MemoryRadar';
 import { SecurityAuditView } from './components/SecurityAuditView';
 import { LiveDriftFeed } from './components/LiveDriftFeed';
 import { CostOptimizerHUD } from './components/CostOptimizerHUD';
-import { Sparkles, Clock, ShieldCheck, Database, Lock, MessageSquare, Activity, Coins } from 'lucide-react';
+import { GatewayMultiplexerView } from './components/GatewayMultiplexerView';
+import { Sparkles, Clock, ShieldCheck, Database, Lock, MessageSquare, Activity, Coins, Network } from 'lucide-react';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'drift' | 'chat' | 'temporal' | 'claims' | 'memory' | 'security' | 'cost'>('cost');
+  const [activeTab, setActiveTab] = useState<'drift' | 'chat' | 'temporal' | 'claims' | 'memory' | 'security' | 'cost' | 'gateway'>('gateway');
   const [models, setModels] = useState<ModelHorizon[]>([]);
   const [selectedModel, setSelectedModel] = useState('gpt-6-astra');
   const [projectId, setProjectId] = useState('antigravity-ide');
@@ -323,6 +324,17 @@ export const App: React.FC = () => {
           >
             <Coins className="w-4 h-4" /> Cost & Token Optimizer
           </button>
+
+          <button
+            onClick={() => setActiveTab('gateway')}
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              activeTab === 'gateway'
+                ? 'bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-black font-black shadow-gold-glow scale-[1.02]'
+                : 'text-slate-300 hover:text-amber-300 hover:bg-[#121827] border border-transparent hover:border-amber-500/20'
+            }`}
+          >
+            <Network className="w-4 h-4" /> MCP Gateway (MCPLEX)
+          </button>
         </div>
       </div>
 
@@ -376,6 +388,10 @@ export const App: React.FC = () => {
         {activeTab === 'cost' && (
           <CostOptimizerHUD />
         )}
+
+        {activeTab === 'gateway' && (
+          <GatewayMultiplexerView />
+        )}
       </main>
 
       {/* Golden Footer Bar */}
@@ -383,10 +399,10 @@ export const App: React.FC = () => {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-2">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_#f59e0b]"></span>
-            <span>ChronoFact Epistemic Architecture • Rust Core + React/TypeScript Cockpit</span>
+            <span>ChronoFact Epistemic Architecture • Rust Core + React/TypeScript Cockpit • Spec 2025-03-26</span>
           </div>
           <div className="text-amber-400/90 font-semibold">
-            Grounded Horizon Evaluation: <span className="text-white">2026-10-05</span>
+            Grounded Horizon Evaluation: <span className="text-white">2026-10-07</span>
           </div>
         </div>
       </footer>

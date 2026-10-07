@@ -136,3 +136,27 @@ export interface ToolRoutingResult {
   cost_reduction_pct: number;
   prompt_cache_anchor: string;
 }
+
+export interface GatewayServerStatus {
+  name: string;
+  connected: boolean;
+  transport: string;
+  tools_count: number;
+  resources_count: number;
+  prompts_count: number;
+}
+
+export interface GatewayTool {
+  definition: {
+    name: string;
+    description?: string;
+    inputSchema?: any;
+    annotations?: {
+      readOnlyHint?: boolean;
+      readOnly?: boolean;
+    };
+  };
+  server_name: string;
+  fqn: string;
+}
+
