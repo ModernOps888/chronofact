@@ -133,12 +133,10 @@ impl Config {
         let parsed: serde_json::Value = serde_json::from_str(&content)?;
         
         // Supports either {"servers": [...]} or direct array [...] or {"mcpServers": {"server_name": {...}}} (Claude/Cursor format)
-        if let Some(arr) = parsed.get("servers").and_then(|v| v.as_array()) {
-            let list = serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
-            Ok(list)
+        let mut list: Vec<UpstreamServerConfig> = if let Some(arr) = parsed.get("servers").and_then(|v| v.as_array()) {
+            serde_json::from_value(serde_json::Value::Array(arr.clone()))?
         } else if let Some(arr) = parsed.as_array() {
-            let list = serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
-            Ok(list)
+            serde_json::from_value(serde_json::Value::Array(arr.clone()))?
         } else if let Some(mcp) = parsed.get("mcpServers").and_then(|v| v.as_object()) {
             let mut list = Vec::new();
             for (name, obj) in mcp {
@@ -183,9 +181,77 @@ impl Config {
                     request_timeout_secs: Some(30),
                 });
             }
-            Ok(list)
+            list
         } else {
-            Ok(Vec::new())
+            Vec::new()
+        };
+
+        // Expand ${VAR} and ${VAR:-default} environment variables across url, headers, env, args, command
+        for cfg in list.iter_mut() {
+            Self::expand_server_config(cfg);
+        }
+
+        Ok(list)
+    }
+
+    /// Expands environment variables in ${VAR} or ${VAR:-default} format
+    pub fn expand_env_vars(input: &str) -> String {
+        let mut result = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '$' && chars.peek() == Some(&'{') {
+                chars.next(); // consume '{'
+                let mut var_expr = String::new();
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        closed = true;
+                        break;
+                    }
+                    var_expr.push(c);
+                }
+                if closed {
+                    let (var_name, default_val) = match var_expr.split_once(":-") {
+                        Some((k, d)) => (k.trim(), Some(d)),
+                        None => (var_expr.trim(), None),
+                    };
+                    if let Ok(val) = env::var(var_name) {
+                        result.push_str(&val);
+                    } else if let Some(d) = default_val {
+                        result.push_str(d);
+                    }
+                } else {
+                    result.push('$');
+                    result.push('{');
+                    result.push_str(&var_expr);
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+
+        result
+    }
+
+    /// Expands environment variables in an UpstreamServerConfig
+    pub fn expand_server_config(cfg: &mut UpstreamServerConfig) {
+        if let Some(ref mut u) = cfg.url {
+            *u = Self::expand_env_vars(u);
+        }
+        if let Some(ref mut h) = cfg.headers {
+            for v in h.values_mut() {
+                *v = Self::expand_env_vars(v);
+            }
+        }
+        for v in cfg.env.values_mut() {
+            *v = Self::expand_env_vars(v);
+        }
+        for a in cfg.args.iter_mut() {
+            *a = Self::expand_env_vars(a);
+        }
+        if let Some(ref mut c) = cfg.command {
+            *c = Self::expand_env_vars(c);
         }
     }
 }

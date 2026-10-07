@@ -101,14 +101,23 @@ impl McpServer {
         let id = req.id;
         match req.method.as_str() {
             "initialize" => {
+                let client_proto = req.params.as_ref()
+                    .and_then(|p| p.get("protocolVersion"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("2025-03-26");
+                let proto = if client_proto == "2024-11-05" {
+                    "2024-11-05"
+                } else {
+                    "2025-03-26"
+                };
                 let result = json!({
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": proto,
                     "capabilities": {
                         "tools": {}
                     },
                     "serverInfo": {
                         "name": "chronofact",
-                        "version": "0.1.0"
+                        "version": env!("CARGO_PKG_VERSION")
                     }
                 });
                 Some(JsonRpcResponse::success(id, result))
@@ -123,13 +132,17 @@ impl McpServer {
                     if let Some(arr) = tools_data.get_mut("tools").and_then(|v| v.as_array_mut()) {
                         for ut in upstream {
                             let schema = ut.definition.input_schema.unwrap_or_else(|| json!({"type": "object", "properties": {}}));
-                            arr.push(json!({
+                            let mut tool_obj = json!({
                                 "name": ut.definition.name,
                                 "description": ut.definition.description.unwrap_or_else(|| format!("Upstream tool on server '{}'", ut.server_name)),
                                 "inputSchema": schema,
                                 "server": ut.server_name,
                                 "fqn": ut.fqn
-                            }));
+                            });
+                            if let Some(ref annotations) = ut.definition.annotations {
+                                tool_obj["annotations"] = annotations.clone();
+                            }
+                            arr.push(tool_obj);
                         }
                     }
                 }
@@ -143,15 +156,19 @@ impl McpServer {
                 let tool_result = self.execute_tool(tool_name, &args).await;
                 match tool_result {
                     Ok(val) => {
-                        let result_obj = json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string())
-                                }
-                            ],
-                            "isError": false
-                        });
+                        let result_obj = if val.is_object() && val.get("content").and_then(|c| c.as_array()).is_some() {
+                            val
+                        } else {
+                            json!({
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string())
+                                    }
+                                ],
+                                "isError": false
+                            })
+                        };
                         Some(JsonRpcResponse::success(id, result_obj))
                     }
                     Err(err_msg) => {
@@ -524,15 +541,16 @@ impl McpServer {
                 let tool_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing name")?;
                 let tool_args = args.get("arguments").cloned().unwrap_or(json!({}));
                 let verify_output = args.get("verify_output").and_then(|v| v.as_bool()).unwrap_or(true);
+                let passthrough = args.get("passthrough").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                self.dispatch_upstream_tool(tool_name, &tool_args, verify_output).await
+                self.dispatch_upstream_tool(tool_name, &tool_args, verify_output, passthrough).await
             }
             other => {
                 if let Some(ref gw) = self.gateway {
                     let gw_guard = gw.read().await;
                     if gw_guard.find_tool_server(other).is_some() {
                         drop(gw_guard);
-                        return self.dispatch_upstream_tool(other, args, true).await;
+                        return self.dispatch_upstream_tool(other, args, true, true).await;
                     }
                 }
                 Err(format!("Unknown tool: {}", other))
@@ -545,6 +563,7 @@ impl McpServer {
         name: &str,
         args: &Value,
         verify_output: bool,
+        passthrough: bool,
     ) -> Result<Value, String> {
         let gw = self.gateway.as_ref().ok_or("Gateway subsystem not initialized")?;
 
@@ -552,16 +571,31 @@ impl McpServer {
         let args_str = args.to_string();
         let (has_threats, threats) = self.sanitizer.inspect_user_query(&args_str);
         if has_threats {
-            return Err(format!("Security shield blocked dangerous tool call argument: {:?}", threats));
+            if passthrough {
+                tracing::warn!("Gateway passthrough mode: argument inspection warning: {:?}", threats);
+            } else {
+                return Err(format!("Security shield blocked dangerous tool call argument: {:?}", threats));
+            }
         }
 
-        // 2. Idempotent Tool Cache Check
-        if let Some(cached) = self.tool_cache.get(name, args) {
-            return Ok(json!({
-                "result": cached,
-                "cache_hit": true,
-                "verified": true
-            }));
+        // 2. Read-Only Gating for Cache Check: only cache tools that declare readOnlyHint: true
+        let is_read_only = {
+            let gw_guard = gw.read().await;
+            gw_guard.get_tool_definition(name).map(|t| t.is_read_only()).unwrap_or(false)
+        };
+
+        if is_read_only {
+            if let Some(cached) = self.tool_cache.get(name, args) {
+                if passthrough {
+                    return Ok(cached);
+                } else {
+                    return Ok(json!({
+                        "result": cached,
+                        "cache_hit": true,
+                        "verified": true
+                    }));
+                }
+            }
         }
 
         // 3. Dispatch to Upstream Server (resolve target under ephemeral lock to avoid holding RwLock across network await)
@@ -587,14 +621,20 @@ impl McpServer {
             None
         };
 
-        // 5. Cache result & log telemetry
-        self.tool_cache.put(name, args, upstream_result.clone());
+        // 5. Cache result only for read-only tools
+        if is_read_only {
+            self.tool_cache.put(name, args, upstream_result.clone());
+        }
 
-        Ok(json!({
-            "result": upstream_result,
-            "cache_hit": false,
-            "verification": verification_info
-        }))
+        if passthrough {
+            Ok(upstream_result)
+        } else {
+            Ok(json!({
+                "result": upstream_result,
+                "cache_hit": false,
+                "verification": verification_info
+            }))
+        }
     }
 }
 

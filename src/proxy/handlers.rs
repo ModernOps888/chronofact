@@ -386,6 +386,7 @@ pub struct GatewayCallRequest {
     pub name: String,
     pub arguments: Option<serde_json::Value>,
     pub verify_output: Option<bool>,
+    pub passthrough: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,17 +427,34 @@ pub async fn call_gateway_tool(
     let gw = state.gateway.as_ref().ok_or((StatusCode::SERVICE_UNAVAILABLE, "Gateway subsystem not active".to_string()))?;
 
     let args_val = payload.arguments.clone().unwrap_or(json!({}));
+    let is_passthrough = payload.passthrough.unwrap_or(false);
+
     let (threat, threats) = state.sanitizer.inspect_user_query(&args_val.to_string());
     if threat {
-        return Err((StatusCode::BAD_REQUEST, format!("Security shield rejected parameters: {:?}", threats)));
+        if is_passthrough {
+            tracing::warn!("Gateway proxy passthrough mode: argument inspection warning: {:?}", threats);
+        } else {
+            return Err((StatusCode::BAD_REQUEST, format!("Security shield rejected parameters: {:?}", threats)));
+        }
     }
 
-    if let Some(cached) = state.tool_cache.get(&payload.name, &args_val) {
-        return Ok((StatusCode::OK, Json(json!({
-            "result": cached,
-            "cache_hit": true,
-            "verified": true
-        }))));
+    let is_read_only = {
+        let gw_guard = gw.read().await;
+        gw_guard.get_tool_definition(&payload.name).map(|t| t.is_read_only()).unwrap_or(false)
+    };
+
+    if is_read_only {
+        if let Some(cached) = state.tool_cache.get(&payload.name, &args_val) {
+            if is_passthrough {
+                return Ok((StatusCode::OK, Json(cached)));
+            } else {
+                return Ok((StatusCode::OK, Json(json!({
+                    "result": cached,
+                    "cache_hit": true,
+                    "verified": true
+                }))));
+            }
+        }
     }
 
     let target = {
@@ -459,13 +477,19 @@ pub async fn call_gateway_tool(
         None
     };
 
-    state.tool_cache.put(&payload.name, &args_val, result.clone());
+    if is_read_only {
+        state.tool_cache.put(&payload.name, &args_val, result.clone());
+    }
 
-    Ok((StatusCode::OK, Json(json!({
-        "result": result,
-        "cache_hit": false,
-        "verification": verification
-    }))))
+    if is_passthrough {
+        Ok((StatusCode::OK, Json(result)))
+    } else {
+        Ok((StatusCode::OK, Json(json!({
+            "result": result,
+            "cache_hit": false,
+            "verification": verification
+        }))))
+    }
 }
 
 pub async fn register_gateway_server(

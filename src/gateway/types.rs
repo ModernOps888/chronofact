@@ -60,6 +60,10 @@ impl UpstreamServerConfig {
         self.headers = Some(headers);
         self
     }
+
+    pub fn expand_env(&mut self) {
+        crate::config::Config::expand_server_config(self);
+    }
 }
 
 /// MCP Tool Definition
@@ -70,6 +74,38 @@ pub struct ToolDefinition {
     pub description: Option<String>,
     #[serde(rename = "inputSchema", default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<serde_json::Value>,
+}
+
+impl ToolDefinition {
+    pub fn new(name: impl Into<String>, description: Option<String>, input_schema: Option<serde_json::Value>) -> Self {
+        Self {
+            name: name.into(),
+            description,
+            input_schema,
+            annotations: None,
+        }
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        if let Some(ref ann) = self.annotations {
+            if let Some(obj) = ann.as_object() {
+                if let Some(hint) = obj.get("readOnlyHint").and_then(|v| v.as_bool()) {
+                    return hint;
+                }
+                if let Some(ro) = obj.get("readOnly").and_then(|v| v.as_bool()) {
+                    return ro;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn with_annotations(mut self, annotations: serde_json::Value) -> Self {
+        self.annotations = Some(annotations);
+        self
+    }
 }
 
 /// A registered tool tagged with its origin server and fully-qualified name

@@ -32,6 +32,7 @@ pub enum ToolExecutionTarget {
         arguments: Option<serde_json::Value>,
         client: reqwest::Client,
         session_id: Option<String>,
+        http_sessions: Arc<std::sync::RwLock<HashMap<String, String>>>,
     },
     Stdio {
         conn: Arc<StdioConnection>,
@@ -44,63 +45,154 @@ impl ToolExecutionTarget {
     pub async fn execute(self) -> anyhow::Result<serde_json::Value> {
         match self {
             ToolExecutionTarget::Http {
-                server_name: _,
+                server_name,
                 url,
                 config,
                 bare_name,
                 arguments,
                 client,
                 session_id,
+                http_sessions,
             } => {
-                let req_body = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": bare_name,
-                        "arguments": arguments,
+                let mut current_session = session_id;
+                let mut attempts = 0;
+
+                loop {
+                    attempts += 1;
+                    let req_body = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": bare_name,
+                            "arguments": arguments,
+                        }
+                    });
+
+                    let mut builder = client
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json, text/event-stream")
+                        .header("MCP-Protocol-Version", "2025-03-26");
+
+                    if let Some(ref sid) = current_session {
+                        builder = builder.header("Mcp-Session-Id", sid);
                     }
-                });
 
-                let mut builder = client
-                    .post(&url)
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json, text/event-stream");
-
-                if let Some(ref sid) = session_id {
-                    builder = builder.header("Mcp-Session-Id", sid);
-                }
-
-                if let Some(ref headers) = config.headers {
-                    for (k, v) in headers {
-                        builder = builder.header(k, v);
+                    if let Some(ref headers) = config.headers {
+                        for (k, v) in headers {
+                            builder = builder.header(k, v);
+                        }
                     }
-                }
 
-                let resp = builder.json(&req_body).send().await?;
-                let status = resp.status();
-                let content_type = resp
-                    .headers()
-                    .get("content-type")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let body_text = resp.text().await?;
+                    let resp = builder.json(&req_body).send().await?;
+                    let status = resp.status();
 
-                if !status.is_success() {
-                    return Err(anyhow::anyhow!(
-                        "Upstream HTTP server returned status {}: {}",
-                        status,
-                        body_text
-                    ));
-                }
+                    // Session expiry recovery: on 404 with existing session ID, re-initialize and retry once
+                    if status == reqwest::StatusCode::NOT_FOUND && current_session.is_some() && attempts == 1 {
+                        warn!(
+                            "Upstream server '{}' returned 404 for session {:?}. Session expired, re-initializing...",
+                            server_name, current_session
+                        );
 
-                let body = GatewayMultiplexer::parse_mcp_response(content_type.as_deref(), &body_text)?;
-                if let Some(res) = body.get("result") {
-                    Ok(res.clone())
-                } else if let Some(err) = body.get("error") {
-                    Err(anyhow::anyhow!("Upstream error: {}", err))
-                } else {
-                    Err(anyhow::anyhow!("Invalid response from upstream HTTP server: {}", body))
+                        if let Ok(mut sessions) = http_sessions.write() {
+                            sessions.remove(&server_name);
+                        }
+                        current_session = None;
+
+                        let init_req = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 100,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2025-03-26",
+                                "capabilities": {},
+                                "clientInfo": {
+                                    "name": "chronofact-gateway",
+                                    "version": env!("CARGO_PKG_VERSION")
+                                }
+                            }
+                        });
+
+                        let mut init_builder = client
+                            .post(&url)
+                            .header("Content-Type", "application/json")
+                            .header("Accept", "application/json, text/event-stream")
+                            .header("MCP-Protocol-Version", "2025-03-26");
+
+                        if let Some(ref headers) = config.headers {
+                            for (k, v) in headers {
+                                init_builder = init_builder.header(k, v);
+                            }
+                        }
+
+                        if let Ok(init_resp) = init_builder.json(&init_req).send().await {
+                            if init_resp.status().is_success() {
+                                if let Some(sess_val) = init_resp.headers().get("mcp-session-id") {
+                                    if let Ok(sess_str) = sess_val.to_str() {
+                                        let new_sid = sess_str.trim().to_string();
+                                        current_session = Some(new_sid.clone());
+                                        if let Ok(mut sessions) = http_sessions.write() {
+                                            sessions.insert(server_name.clone(), new_sid);
+                                        }
+                                    }
+                                }
+
+                                let notify_req = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "notifications/initialized"
+                                });
+                                let mut notify_builder = client
+                                    .post(&url)
+                                    .header("Content-Type", "application/json")
+                                    .header("MCP-Protocol-Version", "2025-03-26");
+                                if let Some(ref sid) = current_session {
+                                    notify_builder = notify_builder.header("Mcp-Session-Id", sid);
+                                }
+                                if let Some(ref headers) = config.headers {
+                                    for (k, v) in headers {
+                                        notify_builder = notify_builder.header(k, v);
+                                    }
+                                }
+                                let _ = notify_builder.json(&notify_req).send().await;
+
+                                continue;
+                            }
+                        }
+                    }
+
+                    if let Some(sess_val) = resp.headers().get("mcp-session-id") {
+                        if let Ok(sess_str) = sess_val.to_str() {
+                            let new_sid = sess_str.trim().to_string();
+                            if let Ok(mut sessions) = http_sessions.write() {
+                                sessions.insert(server_name.clone(), new_sid);
+                            }
+                        }
+                    }
+
+                    let content_type = resp
+                        .headers()
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let body_text = resp.text().await?;
+
+                    if !status.is_success() {
+                        return Err(anyhow::anyhow!(
+                            "Upstream HTTP server returned status {}: {}",
+                            status,
+                            body_text
+                        ));
+                    }
+
+                    let body = GatewayMultiplexer::parse_mcp_response(content_type.as_deref(), &body_text)?;
+                    if let Some(res) = body.get("result") {
+                        return Ok(res.clone());
+                    } else if let Some(err) = body.get("error") {
+                        return Err(anyhow::anyhow!("Upstream error: {}", err));
+                    } else {
+                        return Err(anyhow::anyhow!("Invalid response from upstream HTTP server: {}", body));
+                    }
                 }
             }
             ToolExecutionTarget::Stdio {
@@ -136,7 +228,7 @@ pub struct GatewayMultiplexer {
     all_prompts: Vec<RegisteredPrompt>,
     death_tx: DeathSender,
     http_client: reqwest::Client,
-    http_sessions: std::sync::RwLock<HashMap<String, String>>,
+    http_sessions: Arc<std::sync::RwLock<HashMap<String, String>>>,
 }
 
 impl GatewayMultiplexer {
@@ -163,7 +255,7 @@ impl GatewayMultiplexer {
             all_prompts: Vec::new(),
             death_tx,
             http_client,
-            http_sessions: std::sync::RwLock::new(HashMap::new()),
+            http_sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
         };
 
         for config in server_configs {
@@ -179,7 +271,8 @@ impl GatewayMultiplexer {
     }
 
     /// Register and connect to a single upstream server dynamically
-    pub async fn register_and_connect(&mut self, config: UpstreamServerConfig) {
+    pub async fn register_and_connect(&mut self, mut config: UpstreamServerConfig) {
+        config.expand_env();
         let name = config.name.clone();
 
         let (tools, resources, prompts, connected) = if config.url.is_some() {
@@ -204,7 +297,7 @@ impl GatewayMultiplexer {
                 prompts.len()
             );
         } else {
-            warn!("⚠️ Gateway failed connecting to '{}' — registered in disconnected state", name);
+            warn!("⚠️ Gateway failed connecting to '{}' - registered in disconnected state", name);
         }
 
         // Index tools with collision disambiguation (MCPlex FQN pattern)
@@ -215,7 +308,7 @@ impl GatewayMultiplexer {
             if let Some(existing_server) = self.tool_index.get(&tool.name) {
                 if existing_server != &name {
                     warn!(
-                        "⚠️ Tool collision: '{}' registered by both '{}' and '{}'. Ambiguous bare name removed — use FQN 'server/tool'.",
+                        "⚠️ Tool collision: '{}' registered by both '{}' and '{}'. Ambiguous bare name removed (use FQN 'server/tool').",
                         tool.name, existing_server, name
                     );
                     self.tool_index.remove(&tool.name);
@@ -340,6 +433,7 @@ impl GatewayMultiplexer {
                 arguments,
                 client: self.http_client.clone(),
                 session_id,
+                http_sessions: Arc::clone(&self.http_sessions),
             })
         } else if let Some(conn) = self.stdio_connections.get(server_name) {
             Ok(ToolExecutionTarget::Stdio {
@@ -404,6 +498,25 @@ impl GatewayMultiplexer {
         self.tool_index.get(name_or_fqn).cloned()
     }
 
+    /// Look up the tool definition for a tool by name or FQN
+    pub fn get_tool_definition(&self, name_or_fqn: &str) -> Option<&ToolDefinition> {
+        let server_name = self.tool_index.get(name_or_fqn)?;
+        let server = self.servers.get(server_name)?;
+        let bare_name = if let Some((_, bare)) = name_or_fqn.split_once('/') {
+            bare
+        } else {
+            name_or_fqn
+        };
+        server.tools.iter().find(|t| t.name == bare_name)
+    }
+
+    /// Clear cached HTTP session ID for an upstream server
+    pub fn clear_http_session(&self, server_name: &str) {
+        if let Ok(mut sessions) = self.http_sessions.write() {
+            sessions.remove(server_name);
+        }
+    }
+
     /// Return status summary for all managed servers
     pub fn get_server_statuses(&self) -> Vec<UpstreamServerStatus> {
         self.servers
@@ -461,38 +574,86 @@ impl GatewayMultiplexer {
                 let has_resources = caps.get("resources").is_some();
                 let has_prompts = caps.get("prompts").is_some();
 
-                let tools_res: Result<serde_json::Value, _> = conn.send_request("tools/list", serde_json::json!({})).await;
-                let tools: Vec<ToolDefinition> = if has_tools {
-                    tools_res
-                        .ok()
-                        .and_then(|r| r.get("tools").cloned())
-                        .and_then(|v| serde_json::from_value(v).ok())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
+                let mut tools = Vec::new();
+                if has_tools {
+                    let mut cursor: Option<String> = None;
+                    loop {
+                        let mut params = serde_json::Map::new();
+                        if let Some(ref c) = cursor {
+                            params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
+                        }
+                        let res: Result<serde_json::Value, _> = conn.send_request("tools/list", serde_json::Value::Object(params)).await;
+                        if let Ok(val) = res {
+                            if let Some(arr) = val.get("tools").and_then(|t| t.as_array()) {
+                                for item in arr {
+                                    if let Ok(t) = serde_json::from_value::<ToolDefinition>(item.clone()) {
+                                        tools.push(t);
+                                    }
+                                }
+                            }
+                            cursor = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if cursor.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
 
-                let res_val: Result<serde_json::Value, _> = conn.send_request("resources/list", serde_json::json!({})).await;
-                let resources: Vec<ResourceDefinition> = if has_resources {
-                    res_val
-                        .ok()
-                        .and_then(|r| r.get("resources").cloned())
-                        .and_then(|v| serde_json::from_value(v).ok())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
+                let mut resources = Vec::new();
+                if has_resources {
+                    let mut cursor: Option<String> = None;
+                    loop {
+                        let mut params = serde_json::Map::new();
+                        if let Some(ref c) = cursor {
+                            params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
+                        }
+                        let res: Result<serde_json::Value, _> = conn.send_request("resources/list", serde_json::Value::Object(params)).await;
+                        if let Ok(val) = res {
+                            if let Some(arr) = val.get("resources").and_then(|r| r.as_array()) {
+                                for item in arr {
+                                    if let Ok(r) = serde_json::from_value::<ResourceDefinition>(item.clone()) {
+                                        resources.push(r);
+                                    }
+                                }
+                            }
+                            cursor = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if cursor.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
 
-                let prompts_val: Result<serde_json::Value, _> = conn.send_request("prompts/list", serde_json::json!({})).await;
-                let prompts: Vec<PromptDefinition> = if has_prompts {
-                    prompts_val
-                        .ok()
-                        .and_then(|r| r.get("prompts").cloned())
-                        .and_then(|v| serde_json::from_value(v).ok())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
+                let mut prompts = Vec::new();
+                if has_prompts {
+                    let mut cursor: Option<String> = None;
+                    loop {
+                        let mut params = serde_json::Map::new();
+                        if let Some(ref c) = cursor {
+                            params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
+                        }
+                        let res: Result<serde_json::Value, _> = conn.send_request("prompts/list", serde_json::Value::Object(params)).await;
+                        if let Ok(val) = res {
+                            if let Some(arr) = val.get("prompts").and_then(|p| p.as_array()) {
+                                for item in arr {
+                                    if let Ok(p) = serde_json::from_value::<PromptDefinition>(item.clone()) {
+                                        prompts.push(p);
+                                    }
+                                }
+                            }
+                            cursor = val.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if cursor.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
 
                 self.stdio_connections.insert(config.name.clone(), Arc::new(conn));
                 (tools, resources, prompts, true)
@@ -588,42 +749,117 @@ impl GatewayMultiplexer {
         config: &UpstreamServerConfig,
         payload: &serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
-        let mut builder = self.http_client.post(url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream");
+        let mut current_session = self.get_http_session_id(server_name);
+        let mut attempts = 0;
 
-        // Attach Mcp-Session-Id if previously established for this upstream server
-        if let Some(session_id) = self.get_http_session_id(server_name) {
-            builder = builder.header("Mcp-Session-Id", session_id);
-        }
+        loop {
+            attempts += 1;
+            let mut builder = self.http_client.post(url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-03-26");
 
-        // Attach custom authentication headers from config
-        if let Some(ref headers) = config.headers {
-            for (k, v) in headers {
-                builder = builder.header(k, v);
+            // Attach Mcp-Session-Id if previously established for this upstream server
+            if let Some(ref session_id) = current_session {
+                builder = builder.header("Mcp-Session-Id", session_id);
             }
-        }
 
-        let resp = builder.json(payload).send().await?;
-
-        // Extract Mcp-Session-Id from response headers if present
-        if let Some(sess_val) = resp.headers().get("mcp-session-id") {
-            if let Ok(sess_str) = sess_val.to_str() {
-                if let Ok(mut sessions) = self.http_sessions.write() {
-                    sessions.insert(server_name.to_string(), sess_str.trim().to_string());
+            // Attach custom authentication headers from config
+            if let Some(ref headers) = config.headers {
+                for (k, v) in headers {
+                    builder = builder.header(k, v);
                 }
             }
+
+            let resp = builder.json(payload).send().await?;
+            let status = resp.status();
+
+            // Session recovery on 404: if 404 and we had a session ID, clear and re-initialize once
+            let method = payload.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            if status == reqwest::StatusCode::NOT_FOUND && current_session.is_some() && attempts == 1 && method != "initialize" {
+                warn!(
+                    "Upstream server '{}' returned 404 for session {:?}. Session expired, re-initializing...",
+                    server_name, current_session
+                );
+                self.clear_http_session(server_name);
+                current_session = None;
+
+                let init_req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 100,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "chronofact-gateway",
+                            "version": env!("CARGO_PKG_VERSION")
+                        }
+                    }
+                });
+
+                let mut init_builder = self.http_client.post(url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("MCP-Protocol-Version", "2025-03-26");
+                if let Some(ref headers) = config.headers {
+                    for (k, v) in headers {
+                        init_builder = init_builder.header(k, v);
+                    }
+                }
+
+                if let Ok(init_resp) = init_builder.json(&init_req).send().await {
+                    if init_resp.status().is_success() {
+                        if let Some(sess_val) = init_resp.headers().get("mcp-session-id") {
+                            if let Ok(sess_str) = sess_val.to_str() {
+                                let new_sid = sess_str.trim().to_string();
+                                current_session = Some(new_sid.clone());
+                                if let Ok(mut sessions) = self.http_sessions.write() {
+                                    sessions.insert(server_name.to_string(), new_sid);
+                                }
+                            }
+                        }
+
+                        let notify_req = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/initialized"
+                        });
+                        let mut notify_builder = self.http_client.post(url)
+                            .header("Content-Type", "application/json")
+                            .header("MCP-Protocol-Version", "2025-03-26");
+                        if let Some(ref sid) = current_session {
+                            notify_builder = notify_builder.header("Mcp-Session-Id", sid);
+                        }
+                        if let Some(ref headers) = config.headers {
+                            for (k, v) in headers {
+                                notify_builder = notify_builder.header(k, v);
+                            }
+                        }
+                        let _ = notify_builder.json(&notify_req).send().await;
+
+                        continue;
+                    }
+                }
+            }
+
+            // Extract Mcp-Session-Id from response headers if present
+            if let Some(sess_val) = resp.headers().get("mcp-session-id") {
+                if let Ok(sess_str) = sess_val.to_str() {
+                    if let Ok(mut sessions) = self.http_sessions.write() {
+                        sessions.insert(server_name.to_string(), sess_str.trim().to_string());
+                    }
+                }
+            }
+
+            let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+            let body_text = resp.text().await?;
+
+            if !status.is_success() {
+                return Err(anyhow::anyhow!("Upstream HTTP server returned status {}: {}", status, body_text));
+            }
+
+            return Self::parse_mcp_response(content_type.as_deref(), &body_text);
         }
-
-        let status = resp.status();
-        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-        let body_text = resp.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow::anyhow!("Upstream HTTP server returned status {}: {}", status, body_text));
-        }
-
-        Self::parse_mcp_response(content_type.as_deref(), &body_text)
     }
 
     async fn discover_http(
@@ -640,7 +876,7 @@ impl GatewayMultiplexer {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-03-26",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "chronofact-gateway",
@@ -673,47 +909,122 @@ impl GatewayMultiplexer {
         let has_resources = caps.get("resources").is_some();
         let has_prompts = caps.get("prompts").is_some();
 
-        let tools = if has_tools {
-            let req = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
-            if let Ok(body) = self.send_mcp_http_request(&config.name, url, config, &req).await {
-                body.get("result")
-                    .and_then(|r| r.get("tools").cloned())
-                    .and_then(|t| serde_json::from_value(t).ok())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
+        let mut tools = Vec::new();
+        if has_tools {
+            let mut cursor: Option<String> = None;
+            let mut req_id = 2;
+            loop {
+                let mut params = serde_json::Map::new();
+                if let Some(ref c) = cursor {
+                    params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
+                }
+                let req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "tools/list",
+                    "params": params
+                });
+                req_id += 1;
+                match self.send_mcp_http_request(&config.name, url, config, &req).await {
+                    Ok(body) => {
+                        if let Some(res) = body.get("result") {
+                            if let Some(arr) = res.get("tools").and_then(|t| t.as_array()) {
+                                for item in arr {
+                                    if let Ok(t) = serde_json::from_value::<ToolDefinition>(item.clone()) {
+                                        tools.push(t);
+                                    }
+                                }
+                            }
+                            cursor = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if cursor.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
             }
-        } else {
-            Vec::new()
-        };
+        }
 
-        let resources = if has_resources {
-            let req = serde_json::json!({ "jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {} });
-            if let Ok(body) = self.send_mcp_http_request(&config.name, url, config, &req).await {
-                body.get("result")
-                    .and_then(|r| r.get("resources").cloned())
-                    .and_then(|r| serde_json::from_value(r).ok())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
+        let mut resources = Vec::new();
+        if has_resources {
+            let mut cursor: Option<String> = None;
+            let mut req_id = 100;
+            loop {
+                let mut params = serde_json::Map::new();
+                if let Some(ref c) = cursor {
+                    params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
+                }
+                let req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "resources/list",
+                    "params": params
+                });
+                req_id += 1;
+                match self.send_mcp_http_request(&config.name, url, config, &req).await {
+                    Ok(body) => {
+                        if let Some(res) = body.get("result") {
+                            if let Some(arr) = res.get("resources").and_then(|r| r.as_array()) {
+                                for item in arr {
+                                    if let Ok(r) = serde_json::from_value::<ResourceDefinition>(item.clone()) {
+                                        resources.push(r);
+                                    }
+                                }
+                            }
+                            cursor = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if cursor.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
             }
-        } else {
-            Vec::new()
-        };
+        }
 
-        let prompts = if has_prompts {
-            let req = serde_json::json!({ "jsonrpc": "2.0", "id": 4, "method": "prompts/list", "params": {} });
-            if let Ok(body) = self.send_mcp_http_request(&config.name, url, config, &req).await {
-                body.get("result")
-                    .and_then(|r| r.get("prompts").cloned())
-                    .and_then(|p| serde_json::from_value(p).ok())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
+        let mut prompts = Vec::new();
+        if has_prompts {
+            let mut cursor: Option<String> = None;
+            let mut req_id = 200;
+            loop {
+                let mut params = serde_json::Map::new();
+                if let Some(ref c) = cursor {
+                    params.insert("cursor".to_string(), serde_json::Value::String(c.clone()));
+                }
+                let req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "prompts/list",
+                    "params": params
+                });
+                req_id += 1;
+                match self.send_mcp_http_request(&config.name, url, config, &req).await {
+                    Ok(body) => {
+                        if let Some(res) = body.get("result") {
+                            if let Some(arr) = res.get("prompts").and_then(|p| p.as_array()) {
+                                for item in arr {
+                                    if let Ok(p) = serde_json::from_value::<PromptDefinition>(item.clone()) {
+                                        prompts.push(p);
+                                    }
+                                }
+                            }
+                            cursor = res.get("nextCursor").and_then(|c| c.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                            if cursor.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
             }
-        } else {
-            Vec::new()
-        };
+        }
 
         (tools, resources, prompts, true)
     }

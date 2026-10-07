@@ -34,6 +34,7 @@ async fn stress_test_scenario_1_high_concurrency_multiplexing() {
                     "properties": { "id": { "type": "string" }, "payload": { "type": "string" } },
                     "required": ["id"]
                 })),
+                annotations: None,
             };
             all_tools.push(RegisteredTool::new(def, *s_name));
         }

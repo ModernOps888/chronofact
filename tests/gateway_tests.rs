@@ -24,6 +24,7 @@ async fn test_gateway_multi_server_collision_and_fqn() {
             "properties": { "table": { "type": "string" } },
             "required": ["table"]
         })),
+        annotations: None,
     };
 
     // Dynamically register Server B with identical bare tool name 'query_records'
@@ -35,6 +36,7 @@ async fn test_gateway_multi_server_collision_and_fqn() {
             "properties": { "index": { "type": "string" } },
             "required": ["index"]
         })),
+        annotations: None,
     };
 
     {

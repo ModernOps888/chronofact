@@ -149,7 +149,7 @@ impl StdioConnection {
             .send_request_with_timeout(
                 "initialize",
                 serde_json::json!({
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": "2025-03-26",
                     "capabilities": {},
                     "clientInfo": {
                         "name": "chronofact-gateway",
@@ -172,7 +172,7 @@ impl StdioConnection {
         let capabilities = init_result.get("capabilities").cloned().unwrap_or_default();
 
         info!(
-            "🤝 ChronoFact Gateway: MCP handshake successful for '{}' — capabilities: {}",
+            "🤝 ChronoFact Gateway: MCP handshake successful for '{}': capabilities: {}",
             conn.server_name,
             serde_json::to_string(&capabilities).unwrap_or_default()
         );

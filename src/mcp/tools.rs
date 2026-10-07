@@ -189,6 +189,10 @@ pub fn list_tools() -> Value {
                         "verify_output": {
                             "type": "boolean",
                             "description": "Whether to perform deterministic lexical and invariant anti-hallucination claim audit on tool output (default: true)"
+                        },
+                        "passthrough": {
+                            "type": "boolean",
+                            "description": "When true, returns raw upstream MCP content without metadata wrapping and bypasses argument threat blocking for drop-in gateway compatibility (default: false)"
                         }
                     },
                     "required": ["name"]
