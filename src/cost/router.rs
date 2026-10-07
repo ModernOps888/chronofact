@@ -363,3 +363,59 @@ fn tfidf_cosine_similarity(
         dot_product / (q_norm * d_norm)
     }
 }
+
+/// Alias for ToolCandidate conforming to enterprise tool schema specifications.
+pub type ToolSchema = ToolCandidate;
+
+/// Mandatory foundational execution primitives that must never be pruned.
+pub const ALWAYS_RETAINED: &[&str] = &[
+    "read_file",
+    "write_file",
+    "view_file",
+    "replace_file_content",
+    "terminal_exec",
+    "run_command",
+    "bash",
+];
+
+/// Extracts normalized unigram tokens from text.
+pub fn extract_unigrams(text: &str) -> Vec<String> {
+    tokenize(text)
+}
+
+/// Computes lexical token overlap similarity between query tokens and a tool candidate schema.
+pub fn compute_tool_similarity(query_tokens: &[String], tool: &ToolCandidate) -> f32 {
+    let tool_text = format!("{} {} {}", tool.name, tool.server_name, tool.description);
+    let doc_tokens = tokenize(&tool_text);
+    if query_tokens.is_empty() || doc_tokens.is_empty() {
+        return 0.0;
+    }
+    let query_set: HashSet<&String> = query_tokens.iter().collect();
+    let doc_set: HashSet<&String> = doc_tokens.iter().collect();
+    let intersection = query_set.intersection(&doc_set).count() as f32;
+    let union = query_set.union(&doc_set).count() as f32;
+    if union == 0.0 { 0.0 } else { intersection / union }
+}
+
+/// Direct functional tool routing with mandatory ALWAYS_RETAINED whitelist
+/// and top-k fallback when lexical overlap yields zero matches.
+pub fn route_tools(query: &str, tools: &[ToolSchema], threshold: f32) -> Vec<ToolSchema> {
+    let q_unigrams = extract_unigrams(query);
+    
+    let mut selected: Vec<ToolSchema> = tools.iter()
+        .filter(|t| {
+            ALWAYS_RETAINED.contains(&t.name.as_str()) 
+                || compute_tool_similarity(&q_unigrams, t) >= threshold
+        })
+        .cloned()
+        .collect();
+
+    // Fallback Semantic Gating: When unigram extraction yields an empty intersection across all tools
+    // and no pinned tools are present, fall back to retaining top-k tools rather than leaving the agent blind.
+    if selected.is_empty() && !tools.is_empty() {
+        selected = tools.iter().take(3.min(tools.len())).cloned().collect();
+    }
+
+    selected
+}
+

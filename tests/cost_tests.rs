@@ -208,3 +208,40 @@ fn test_memory_calibrator_percentile_ranking() {
     assert!(ranked.len() <= 3);
     assert_eq!(ranked[0].0, "item_6");
 }
+
+#[test]
+fn test_critical_tool_pinning_whitelist_and_route_tools_functional_api() {
+    use chronofact::{route_tools, ToolSchema};
+
+    let tools = vec![
+        ToolSchema::new("read_file", "Reads file contents from disk", "core", vec![]),
+        ToolSchema::new("write_file", "Writes file contents to disk", "core", vec![]),
+        ToolSchema::new("terminal_exec", "Executes shell commands in a terminal", "core", vec![]),
+        ToolSchema::new("unrelated_calculator", "Computes arithmetic numbers", "math", vec![]),
+        ToolSchema::new("unrelated_weather", "Fetches weather forecasts", "geo", vec![]),
+    ];
+
+    // Idiomatic build failure prompt with 0.45 threshold
+    let query = "Why is the build failing with error code 127 in this container?";
+    let selected = route_tools(query, &tools, 0.45);
+
+    let names: Vec<&str> = selected.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"read_file"), "read_file must be retained by ALWAYS_RETAINED whitelist");
+    assert!(names.contains(&"terminal_exec"), "terminal_exec must be retained by ALWAYS_RETAINED whitelist");
+    assert!(!names.contains(&"unrelated_calculator"), "unrelated calculator must be pruned");
+}
+
+#[test]
+fn test_calibrated_quantile_memory_gating_is_memory_relevant() {
+    use chronofact::{is_memory_relevant, EmbeddingProfile, EmbeddingProvider};
+
+    let bge_profile = EmbeddingProfile::with_threshold(EmbeddingProvider::BgeLarge, 0.68);
+    let openai_profile = EmbeddingProfile::with_threshold(EmbeddingProvider::OpenAiTextEmbedding3, 0.76);
+
+    // Score of 0.70 is relevant for BGE (>= 0.68) but irrelevant for OpenAI Text-3 (needs >= 0.76)
+    assert!(is_memory_relevant(0.70, &bge_profile));
+    assert!(!is_memory_relevant(0.70, &openai_profile));
+
+    assert!(is_memory_relevant(0.80, &openai_profile));
+}
+

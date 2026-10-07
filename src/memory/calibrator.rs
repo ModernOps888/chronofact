@@ -124,3 +124,32 @@ impl MemoryCalibrator {
         filtered
     }
 }
+
+/// Provider-calibrated embedding baseline profile for dynamic threshold comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingProfile {
+    pub provider: EmbeddingProvider,
+    pub calibrated_threshold: f32,
+}
+
+impl EmbeddingProfile {
+    pub fn new(provider: EmbeddingProvider) -> Self {
+        Self {
+            calibrated_threshold: provider.default_floor_threshold(),
+            provider,
+        }
+    }
+
+    pub fn with_threshold(provider: EmbeddingProvider, threshold: f32) -> Self {
+        Self {
+            provider,
+            calibrated_threshold: threshold,
+        }
+    }
+}
+
+/// Evaluates whether a memory similarity score exceeds the embedding model's calibrated baseline.
+pub fn is_memory_relevant(score: f32, model_baseline: &EmbeddingProfile) -> bool {
+    score >= model_baseline.calibrated_threshold
+}
+

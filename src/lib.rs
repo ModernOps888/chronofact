@@ -10,7 +10,11 @@ pub mod security;
 pub mod temporal;
 
 pub use config::Config;
-pub use cost::{CostMetricsSummary, CostTracker, RoutingResult, ScoredTool, TfidfToolRouter, ToolCandidate, ToolResponseCache};
+pub use cost::{
+    compute_tool_similarity, extract_unigrams, route_tools, CostMetricsSummary, CostTracker,
+    RoutingResult, ScoredTool, TfidfToolRouter, ToolCandidate, ToolSchema, ALWAYS_RETAINED,
+    ToolResponseCache,
+};
 pub use gateway::{
     GatewayMultiplexer, RegisteredPrompt, RegisteredResource, RegisteredTool, UpstreamServer,
     UpstreamServerConfig, UpstreamServerStatus,
@@ -22,9 +26,10 @@ pub use grounding::{
 };
 pub use mcp::McpServer;
 pub use memory::{
-    DriftEvent, EmbeddingProvider, MemoryCalibrator, MemoryEngine, ProjectDossier, ProjectEntity,
-    SessionEvent, SessionSummary,
+    is_memory_relevant, DriftEvent, EmbeddingProfile, EmbeddingProvider, MemoryCalibrator,
+    MemoryEngine, ProjectDossier, ProjectEntity, SessionEvent, SessionSummary,
 };
+
 pub use proxy::{ApiServer, AppState};
 pub use research::{ContentExtractor, SearchEngine, SourceChunk};
 pub use security::{ContentSanitizer, RateLimiter, SecurityError, SecurityValidator};

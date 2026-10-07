@@ -4,7 +4,7 @@ pub mod l1_buffer;
 pub mod l2_ledger;
 pub mod l3_graph;
 
-pub use calibrator::{EmbeddingProvider, MemoryCalibrator};
+pub use calibrator::{is_memory_relevant, EmbeddingProfile, EmbeddingProvider, MemoryCalibrator};
 pub use dossier::{DossierCompiler, ProjectDossier};
 pub use l1_buffer::{ChatMessage, WorkingBuffer};
 pub use l2_ledger::{DriftEvent, EpisodicLedger, SessionEvent, SessionSummary};
