@@ -532,4 +532,97 @@ fn test_adaptive_memory_two_tier_gating_rejects_noise_cluster() {
     assert!(kept_names.contains(&"good_2".to_string()));
 }
 
+#[test]
+fn test_cache_isolated_prompt_prefix_floor_guarantee() {
+    use chronofact::{CostTracker, PROMPT_CACHE_MINIMUM_TOKEN_FLOOR};
+
+    let project_id = "tenant-enterprise-floor-test";
+    let static_system = "You are ChronoFact Invariant Auditor. Follow all L3 reality invariants.";
+    let static_schemas = "{\"tools\": [{\"name\": \"verify_claims\"}]}"; // small schema ~100 tokens
+
+    // Turn 1
+    let prompt_turn_1 = CostTracker::build_cache_isolated_prompt(
+        project_id,
+        static_system,
+        static_schemas,
+        "<chronofact_temporal_anchor>\nCURRENT_DATE: 2026-10-07\n</chronofact_temporal_anchor>",
+        "Evidence 1: Verified in 2026.",
+        "Verify system state",
+    );
+
+    // Turn 2: Different dynamic inputs
+    let prompt_turn_2 = CostTracker::build_cache_isolated_prompt(
+        project_id,
+        static_system,
+        static_schemas,
+        "<chronofact_temporal_anchor>\nCURRENT_DATE: 2026-10-08\n</chronofact_temporal_anchor>",
+        "Evidence 2: Different evidence chunk.",
+        "Check another query",
+    );
+
+    // 1. Static prefix estimated tokens must clear the 1,024 floor
+    assert!(
+        prompt_turn_1.static_prefix_estimated_tokens >= PROMPT_CACHE_MINIMUM_TOKEN_FLOOR,
+        "Static prefix must clear provider prompt caching floor (>= 1024), got {}",
+        prompt_turn_1.static_prefix_estimated_tokens
+    );
+    assert_eq!(
+        prompt_turn_1.static_prefix_estimated_tokens,
+        prompt_turn_2.static_prefix_estimated_tokens
+    );
+
+    // 2. Standardized context rules must be injected to bridge deficit
+    assert!(prompt_turn_1.static_cache_prefix.contains("[STANDARDIZED_PROJECT_CACHE_CONTEXT]"));
+    assert!(prompt_turn_1.static_cache_prefix.contains("PROVIDER_CACHE_POLICY: MIN_FLOOR_1024_TOKENS"));
+
+    // 3. Static prefix must remain 100% byte-for-byte identical across turns
+    assert_eq!(
+        prompt_turn_1.static_cache_prefix,
+        prompt_turn_2.static_cache_prefix,
+        "Static cache prefix must be byte-stable across multi-turn interactions"
+    );
+
+    // 4. Dynamic suffixes must differ
+    assert_ne!(prompt_turn_1.dynamic_context_suffix, prompt_turn_2.dynamic_context_suffix);
+}
+
+#[test]
+fn test_route_with_token_floor_enforcement() {
+    use chronofact::{route_tools_with_token_floor, TfidfToolRouter, ToolCandidate, ToolSchema};
+
+    let router = TfidfToolRouter::default();
+
+    let tools = vec![
+        ToolCandidate::new("search_web", "Performs real-time web search for technical facts", "web", vec!["query".into()]),
+        ToolCandidate::new("read_url_content", "Fetches raw html markdown from a web url", "web", vec!["url".into()]),
+        ToolCandidate::new("extract_metrics", "Extracts runtime latency metrics from benchmarks", "analytics", vec!["id".into()]),
+        ToolCandidate::new("analyze_performance", "Analyzes system memory and cpu bottlenecks", "analytics", vec!["proc".into()]),
+        ToolCandidate::new("database_vacuum", "Vacuums dead rows from sqlite database", "storage", vec!["table".into()]),
+    ];
+
+    // Standard route with top_k = 1 would select 1 tool (~180 tokens)
+    let base_res = router.route("search web documentation", &tools, 1, None);
+    assert_eq!(base_res.selected_tools.len(), 1);
+    assert!(base_res.tokens_after < 500);
+
+    // Route with token floor = 500 tokens
+    let floor_res = router.route_with_token_floor("search web documentation", &tools, 1, 500, None);
+    assert!(
+        floor_res.tokens_after >= 500,
+        "route_with_token_floor must retain additional tools to satisfy token floor, got {}",
+        floor_res.tokens_after
+    );
+    assert!(floor_res.selected_tools.len() >= 3);
+
+    // Functional API test
+    let schemas: Vec<ToolSchema> = tools.clone();
+    let selected_functional = route_tools_with_token_floor("search web documentation", &schemas, 0.1, 500);
+    let functional_tokens: usize = selected_functional.iter().map(|s| s.estimated_tokens).sum();
+    assert!(
+        functional_tokens >= 500,
+        "route_tools_with_token_floor must retain tools to clear floor, got {}",
+        functional_tokens
+    );
+}
+
 

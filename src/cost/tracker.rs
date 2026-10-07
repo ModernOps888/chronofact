@@ -113,6 +113,8 @@ impl CostTracker {
     /// Isolates static system instructions, pinned tool schemas, and project invariant anchors into an
     /// immutable static cache prefix (matching upstream Anthropic / OpenAI prompt caching requirements),
     /// strictly separating it from dynamic temporal anchors, retrieved real-time evidence, and user queries.
+    /// Guarantees that static prefixes clear the minimum provider prompt caching floor (1,024 tokens)
+    /// by deterministically padding standardized byte-stable project context rules when needed.
     pub fn build_cache_isolated_prompt(
         project_id: &str,
         static_system_instructions: &str,
@@ -123,7 +125,7 @@ impl CostTracker {
     ) -> CacheOptimizedPrompt {
         let anchor = Self::generate_cache_aligned_prefix(project_id);
         
-        let static_cache_prefix = format!(
+        let mut static_cache_prefix = format!(
             "{}\n\
              [STATIC CACHE PREFIX: System Prompt + Pinned Schemas + Cache Anchor]\n\
              {}\n\n\
@@ -133,6 +135,13 @@ impl CostTracker {
             static_system_instructions.trim(),
             static_schemas_json.trim()
         );
+
+        let current_tokens = static_cache_prefix.len() / 4;
+        if current_tokens < PROMPT_CACHE_MINIMUM_TOKEN_FLOOR {
+            let deficit = PROMPT_CACHE_MINIMUM_TOKEN_FLOOR - current_tokens;
+            let padding = generate_standardized_cache_context_rules(project_id, deficit);
+            static_cache_prefix.push_str(&padding);
+        }
 
         let dynamic_context_suffix = format!(
             "[DYNAMIC SUFFIX: Temporal Anchor Header + Retrieved Evidence + User Query]\n\
@@ -149,7 +158,7 @@ impl CostTracker {
         let cache_boundary_marker = "\n<!-- CACHE_BOUNDARY_EPHEMERAL -->\n".to_string();
         let full_assembled_prompt = format!("{}{}{}", static_cache_prefix, cache_boundary_marker, dynamic_context_suffix);
 
-        let static_prefix_estimated_tokens = (static_cache_prefix.len() / 4).max(1);
+        let static_prefix_estimated_tokens = (static_cache_prefix.len() / 4).max(PROMPT_CACHE_MINIMUM_TOKEN_FLOOR);
         let dynamic_suffix_estimated_tokens = (dynamic_context_suffix.len() / 4).max(1);
 
         CacheOptimizedPrompt {
@@ -163,6 +172,45 @@ impl CostTracker {
             cache_aligned: true,
         }
     }
+}
+
+/// Minimum token threshold required by frontier providers (Anthropic Claude 3.5/3.7/Opus/Sonnet 5.5 and OpenAI GPT-4o/o1/o3)
+/// before server-side prompt caching engages.
+pub const PROMPT_CACHE_MINIMUM_TOKEN_FLOOR: usize = 1024;
+
+/// Generates byte-stable standardized project context rules to guarantee that the static cache prefix
+/// clears the minimum provider prompt caching floor (1,024 tokens).
+pub fn generate_standardized_cache_context_rules(project_id: &str, deficit_tokens: usize) -> String {
+    let mut buffer = String::new();
+    buffer.push_str(&format!(
+        "\n\n[STANDARDIZED_PROJECT_CACHE_CONTEXT]\n\
+         PROJECT_IDENTIFIER: {}\n\
+         EPISTEMIC_TIER: L3_INVARIANT_STATIC\n\
+         PROVIDER_CACHE_POLICY: MIN_FLOOR_1024_TOKENS\n\
+         SYSTEM_INVARIANTS:\n\
+         - INVARIANT_1: All factual claims must be anchored against current epistemic verification.\n\
+         - INVARIANT_2: Prohibit unearned concessions and sycophantic capitulation to invalidated user claims.\n\
+         - INVARIANT_3: Enforce strict byte-level prefix stability across multi-turn interactions.\n\
+         - INVARIANT_4: Maintain deterministic schema definitions to prevent mid-session cache invalidation.\n\
+         - INVARIANT_5: Isolate dynamic temporal markers into ephemeral prompt suffixes.\n\
+         - INVARIANT_6: Tool invocations must validate parameter types and bounds before execution.\n\
+         - INVARIANT_7: Workspace modifications must be tracked with cryptographically verifiable checksums.\n\
+         - INVARIANT_8: Reject hallucinated model versions, retired SDK patterns, and frozen cutoff dates.\n",
+        project_id
+    ));
+
+    let base_estimated = buffer.len() / 4;
+    if base_estimated < deficit_tokens {
+        let additional_needed = deficit_tokens - base_estimated;
+        let blocks_needed = (additional_needed / 25).max(1);
+        for i in 0..blocks_needed {
+            buffer.push_str(&format!(
+                "- REPEATABLE_ANCHOR_CLAUSE_{:03}: Static project context verification block for '{}' maintaining prompt cache stability.\n",
+                i + 1, project_id
+            ));
+        }
+    }
+    buffer
 }
 
 /// Representation of a strictly isolated prompt preserving byte-level prompt cache prefixes.

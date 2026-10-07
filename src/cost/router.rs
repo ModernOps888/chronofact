@@ -322,6 +322,80 @@ impl TfidfToolRouter {
             savings_percentage: (savings_percentage * 10.0).round() / 10.0,
         }
     }
+
+    /// Routes tools while enforcing a minimum token floor to satisfy provider prompt caching thresholds.
+    /// Retains top-scoring tools until the total estimated tokens is >= `token_floor` or all candidate tools are included.
+    pub fn route_with_token_floor(
+        &self,
+        query: &str,
+        tools: &[ToolCandidate],
+        top_k: usize,
+        token_floor: usize,
+        threshold: Option<f32>,
+    ) -> RoutingResult {
+        let base_result = self.route(query, tools, top_k, threshold);
+        if base_result.tokens_after >= token_floor || base_result.selected_tools.len() >= tools.len() {
+            return base_result;
+        }
+
+        let is_conceptual = is_conceptual_or_abstract_query(query);
+        let q_unigrams = extract_unigrams(query);
+        let mut selected_names: HashSet<String> = base_result
+            .selected_tools
+            .iter()
+            .map(|s| s.tool.name.clone())
+            .collect();
+
+        let mut candidate_pool: Vec<(usize, f32)> = Vec::new();
+        for (i, tool) in tools.iter().enumerate() {
+            if !selected_names.contains(&tool.name) {
+                if is_conceptual && (tool.is_pinned || self.always_retained.contains(&tool.name) || ALWAYS_RETAINED.contains(&tool.name.as_str())) {
+                    continue;
+                }
+                let sim = compute_tool_similarity(&q_unigrams, tool);
+                candidate_pool.push((i, sim));
+            }
+        }
+
+        candidate_pool.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut selected_tools = base_result.selected_tools;
+        let mut current_tokens = base_result.tokens_after;
+
+        for (idx, score) in candidate_pool {
+            if current_tokens >= token_floor {
+                break;
+            }
+            let candidate_tool = tools[idx].clone();
+            current_tokens += candidate_tool.estimated_tokens;
+            selected_names.insert(candidate_tool.name.clone());
+            selected_tools.push(ScoredTool {
+                tool: candidate_tool,
+                relevance_score: (score * 100.0).round() / 100.0,
+            });
+        }
+
+        let total_tokens = base_result.tokens_before;
+        let tokens_after = current_tokens;
+        let tokens_saved = total_tokens.saturating_sub(tokens_after);
+        let savings_percentage = if total_tokens > 0 {
+            (tokens_saved as f32 / total_tokens as f32) * 100.0
+        } else {
+            0.0
+        };
+        let pruned_count = tools.len().saturating_sub(selected_tools.len());
+
+        RoutingResult {
+            query: query.to_string(),
+            selected_tools,
+            total_tools: tools.len(),
+            pruned_tools: pruned_count,
+            tokens_before: total_tokens,
+            tokens_after,
+            tokens_saved,
+            savings_percentage: (savings_percentage * 10.0).round() / 10.0,
+        }
+    }
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -463,6 +537,53 @@ pub fn route_tools(query: &str, tools: &[ToolSchema], threshold: f32) -> Vec<Too
         } else {
             selected = tools.iter().take(3.min(tools.len())).cloned().collect();
         }
+    }
+
+    selected
+}
+
+/// Direct functional tool routing with token floor enforcement to guarantee prompt cache activation.
+pub fn route_tools_with_token_floor(
+    query: &str,
+    tools: &[ToolSchema],
+    threshold: f32,
+    token_floor: usize,
+) -> Vec<ToolSchema> {
+    let mut selected = route_tools(query, tools, threshold);
+    let mut current_tokens: usize = selected.iter().map(|t| t.estimated_tokens).sum();
+    if current_tokens >= token_floor || selected.len() >= tools.len() {
+        return selected;
+    }
+
+    let is_conceptual = is_conceptual_or_abstract_query(query);
+    let q_unigrams = extract_unigrams(query);
+    let mut selected_names: HashSet<String> = selected.iter().map(|t| t.name.clone()).collect();
+
+    let mut remaining: Vec<(usize, f32)> = tools
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            if selected_names.contains(&t.name) {
+                return false;
+            }
+            if is_conceptual && ALWAYS_RETAINED.contains(&t.name.as_str()) {
+                return false;
+            }
+            true
+        })
+        .map(|(idx, t)| (idx, compute_tool_similarity(&q_unigrams, t)))
+        .collect();
+
+    remaining.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    for (idx, _) in remaining {
+        if current_tokens >= token_floor {
+            break;
+        }
+        let t = tools[idx].clone();
+        current_tokens += t.estimated_tokens;
+        selected_names.insert(t.name.clone());
+        selected.push(t);
     }
 
     selected

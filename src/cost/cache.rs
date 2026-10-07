@@ -66,8 +66,15 @@ impl ToolResponseCache {
 
         // Filesystem State Awareness:
         // If the tool arguments contain a target file path (e.g. read_file, view_file),
-        // incorporate the target file's mtime (nanoseconds) and size into the hash.
+        // incorporate canonical_path, mtime (nanoseconds), and file_size into the hash:
+        // SHA-256(tool_name + canonical_path + mtime + file_size).
         if let Some(val) = Self::extract_path(arguments) {
+            let canon_path = std::path::Path::new(&val)
+                .canonicalize()
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| val.replace('\\', "/"));
+
             if let Ok(meta) = std::fs::metadata(&val) {
                 let mtime = meta.modified()
                     .ok()
@@ -75,7 +82,9 @@ impl ToolResponseCache {
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
                 let len = meta.len();
-                hasher.update(format!(":fs_mtime={}:fs_len={}", mtime, len).as_bytes());
+                hasher.update(format!(":canonical_path={}:mtime={}:file_size={}", canon_path, mtime, len).as_bytes());
+            } else {
+                hasher.update(format!(":canonical_path={}", canon_path).as_bytes());
             }
         }
 
