@@ -512,13 +512,23 @@ impl McpServer {
                 };
                 let _ = self.memory.record_drift_event(&drift_event);
 
+                let cache_optimized = CostTracker::build_cache_isolated_prompt(
+                    project_id,
+                    &dossier.dossier_markdown,
+                    "",
+                    &horizon.calibration_block,
+                    &sources.iter().map(|s| format!("{}: {}", s.title, s.content)).collect::<Vec<_>>().join("\n"),
+                    query,
+                );
+
                 Ok(json!({
                     "project_id": project_id,
                     "model": horizon.model_name,
                     "temporal_analysis": horizon,
                     "grounding_sources": sources,
                     "project_dossier": dossier,
-                    "combined_system_context": format!("{}\n\n{}", dossier.dossier_markdown, horizon.calibration_block)
+                    "combined_system_context": format!("{}\n\n{}", dossier.dossier_markdown, horizon.calibration_block),
+                    "cache_optimized_prompt": cache_optimized
                 }))
             }
             "chronofact_cost_optimize" => {
@@ -545,10 +555,20 @@ impl McpServer {
                 let _ = self.memory.record_cost_event(query, routing.pruned_tools, routing.tokens_saved, cost_usd);
 
                 let cache_prefix = CostTracker::generate_cache_aligned_prefix("antigravity-ide");
+                let schemas_json = serde_json::to_string_pretty(&routing.selected_tools).unwrap_or_default();
+                let cache_optimized = CostTracker::build_cache_isolated_prompt(
+                    "antigravity-ide",
+                    "You are an expert AI assistant operating under ChronoFact invariants.",
+                    &schemas_json,
+                    "",
+                    "",
+                    query,
+                );
 
                 Ok(json!({
                     "optimization": routing,
                     "prompt_cache_anchor": cache_prefix,
+                    "cache_optimized_prompt": cache_optimized,
                     "estimated_savings": {
                         "tokens_saved": routing.tokens_saved,
                         "savings_percentage": routing.savings_percentage,

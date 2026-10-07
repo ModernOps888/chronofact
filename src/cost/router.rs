@@ -68,6 +68,7 @@ impl TfidfToolRouter {
         let mut intent_dictionary: HashMap<String, Vec<String>> = HashMap::new();
         let mappings = vec![
             ("compile", vec!["run_command", "terminal_exec", "read_file", "view_file"]),
+            ("compilation", vec!["run_command", "terminal_exec", "read_file", "view_file"]),
             ("build", vec!["run_command", "terminal_exec", "read_file", "view_file"]),
             ("cargo", vec!["run_command", "terminal_exec"]),
             ("npm", vec!["run_command", "terminal_exec"]),
@@ -166,12 +167,18 @@ impl TfidfToolRouter {
 
         let query_tokens = tokenize(query);
 
+        // Detect if query is purely conceptual/abstract (e.g. "Explain how...", "What is the difference...")
+        // If conceptual, suppress operational intent boost to prevent over-retaining execution tools like terminal_exec
+        let is_conceptual = is_conceptual_or_abstract_query(query);
+
         // Detect semantic intent triggers to resolve idiomatic queries with zero unigram overlap
         let mut intent_matched_tools: HashSet<String> = HashSet::new();
-        for qt in &query_tokens {
-            if let Some(target_list) = self.intent_dictionary.get(qt) {
-                for target in target_list {
-                    intent_matched_tools.insert(target.clone());
+        if !is_conceptual {
+            for qt in &query_tokens {
+                if let Some(target_list) = self.intent_dictionary.get(qt) {
+                    for target in target_list {
+                        intent_matched_tools.insert(target.clone());
+                    }
                 }
             }
         }
@@ -220,7 +227,7 @@ impl TfidfToolRouter {
             })
             .filter(|(i, score)| {
                 let tool = &tools[*i];
-                let is_pinned = tool.is_pinned || self.always_retained.contains(&tool.name);
+                let is_pinned = (!is_conceptual && tool.is_pinned) || (!is_conceptual && self.always_retained.contains(&tool.name));
                 is_pinned || *score >= threshold
             })
             .collect();
@@ -228,18 +235,21 @@ impl TfidfToolRouter {
         // Sort descending by score
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Always-Retain Pinning enforcement: Pinned tools must never be pruned
+        // Always-Retain Pinning enforcement: Pinned tools must never be pruned on operational tasks
         let mut selected_indices: Vec<(usize, f32)> = Vec::new();
         let mut added_indices: HashSet<usize> = HashSet::new();
 
-        // 1. Add all pinned tools first
-        for (i, tool) in tools.iter().enumerate() {
-            if tool.is_pinned || self.always_retained.contains(&tool.name) {
-                let score = scored.iter().find(|(idx, _)| *idx == i).map(|(_, s)| *s).unwrap_or(1.0);
-                selected_indices.push((i, score));
-                added_indices.insert(i);
+        // 1. Add all pinned tools first (suppressed on conceptual queries)
+        if !is_conceptual {
+            for (i, tool) in tools.iter().enumerate() {
+                if tool.is_pinned || self.always_retained.contains(&tool.name) {
+                    let score = scored.iter().find(|(idx, _)| *idx == i).map(|(_, s)| *s).unwrap_or(1.0);
+                    selected_indices.push((i, score));
+                    added_indices.insert(i);
+                }
             }
         }
+
 
         // 2. Fill remaining slots up to top_k with highest scoring tools
         for (i, score) in scored {
@@ -255,8 +265,20 @@ impl TfidfToolRouter {
         // 3. Fallback Semantic Gating: If unigram extraction yields an empty intersection across all tools
         // and no pinned tools are present, fall back to retaining top_k tools rather than leaving the agent blind
         if selected_indices.is_empty() {
-            for (i, _) in tools.iter().enumerate().take(top_k.min(tools.len())) {
-                selected_indices.push((i, 0.5));
+            if is_conceptual {
+                for (i, tool) in tools.iter().enumerate() {
+                    if !self.always_retained.contains(&tool.name) && !ALWAYS_RETAINED.contains(&tool.name.as_str()) {
+                        selected_indices.push((i, 0.5));
+                        if selected_indices.len() >= top_k {
+                            break;
+                        }
+                    }
+                }
+            }
+            if selected_indices.is_empty() {
+                for (i, _) in tools.iter().enumerate().take(top_k.min(tools.len())) {
+                    selected_indices.push((i, 0.5));
+                }
             }
         }
 
@@ -400,11 +422,12 @@ pub fn compute_tool_similarity(query_tokens: &[String], tool: &ToolCandidate) ->
 /// Direct functional tool routing with mandatory ALWAYS_RETAINED whitelist
 /// and top-k fallback when lexical overlap yields zero matches.
 pub fn route_tools(query: &str, tools: &[ToolSchema], threshold: f32) -> Vec<ToolSchema> {
+    let is_conceptual = is_conceptual_or_abstract_query(query);
     let q_unigrams = extract_unigrams(query);
     
     let mut selected: Vec<ToolSchema> = tools.iter()
         .filter(|t| {
-            ALWAYS_RETAINED.contains(&t.name.as_str()) 
+            (!is_conceptual && ALWAYS_RETAINED.contains(&t.name.as_str()))
                 || compute_tool_similarity(&q_unigrams, t) >= threshold
         })
         .cloned()
@@ -413,9 +436,109 @@ pub fn route_tools(query: &str, tools: &[ToolSchema], threshold: f32) -> Vec<Too
     // Fallback Semantic Gating: When unigram extraction yields an empty intersection across all tools
     // and no pinned tools are present, fall back to retaining top-k tools rather than leaving the agent blind.
     if selected.is_empty() && !tools.is_empty() {
-        selected = tools.iter().take(3.min(tools.len())).cloned().collect();
+        if is_conceptual {
+            let non_exec: Vec<ToolSchema> = tools.iter()
+                .filter(|t| !ALWAYS_RETAINED.contains(&t.name.as_str()))
+                .take(3)
+                .cloned()
+                .collect();
+            if !non_exec.is_empty() {
+                selected = non_exec;
+            } else {
+                selected = tools.iter().take(3.min(tools.len())).cloned().collect();
+            }
+        } else {
+            selected = tools.iter().take(3.min(tools.len())).cloned().collect();
+        }
     }
 
     selected
 }
+
+/// Discriminates between purely conceptual/educational inquiries (where operational execution tools
+/// should be pruned to maximize token economy) and actionable diagnostic/engineering tasks
+/// (where operational execution primitives like `terminal_exec` and `read_file` are strictly required).
+pub fn is_conceptual_or_abstract_query(query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return false;
+    }
+
+    // Concrete execution/failure indicators that MUST NEVER be classified as conceptual
+    const DIAGNOSTIC_TRIGGERS: &[&str] = &[
+        "error code",
+        "exit code",
+        "exit status",
+        "failing",
+        "failed",
+        "failure",
+        "error[e",
+        "panicked",
+        "panic:",
+        "segfault",
+        "traceback",
+        "exception in thread",
+        "nullpointer",
+        "build error",
+        "syntax error",
+        "cannot compile",
+        "won't compile",
+        "doesn't compile",
+        "fix this",
+        "debug this",
+        "reproduce",
+        "patch this",
+        "broken build",
+    ];
+
+    for trigger in DIAGNOSTIC_TRIGGERS {
+        if q.contains(trigger) {
+            return false;
+        }
+    }
+
+    // Conceptual / educational query patterns
+    const CONCEPTUAL_PREFIXES: &[&str] = &[
+        "explain",
+        "what is",
+        "what are",
+        "what does",
+        "how does",
+        "how do",
+        "why does",
+        "tell me about",
+        "describe",
+        "overview of",
+        "concept of",
+        "theory behind",
+        "compare",
+        "difference between",
+        "tutorial on",
+        "deep dive into",
+    ];
+
+    for prefix in CONCEPTUAL_PREFIXES {
+        if q.starts_with(prefix) {
+            return true;
+        }
+    }
+
+    // Additional conceptual substrings
+    const CONCEPTUAL_SUBSTRINGS: &[&str] = &[
+        "difference between",
+        "how the rust borrow checker handles",
+        "how garbage collection works",
+        "mental model",
+        "theoretical",
+        "conceptually",
+    ];
+    for sub in CONCEPTUAL_SUBSTRINGS {
+        if q.contains(sub) {
+            return true;
+        }
+    }
+
+    false
+}
+
 

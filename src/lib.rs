@@ -11,9 +11,9 @@ pub mod temporal;
 
 pub use config::Config;
 pub use cost::{
-    compute_tool_similarity, extract_unigrams, route_tools, CostMetricsSummary, CostTracker,
-    RoutingResult, ScoredTool, TfidfToolRouter, ToolCandidate, ToolSchema, ALWAYS_RETAINED,
-    ToolResponseCache,
+    compute_tool_similarity, extract_unigrams, is_conceptual_or_abstract_query, route_tools,
+    CacheOptimizedPrompt, CostMetricsSummary, CostTracker, RoutingResult, ScoredTool,
+    TfidfToolRouter, ToolCandidate, ToolSchema, ALWAYS_RETAINED, ToolResponseCache,
 };
 pub use gateway::{
     GatewayMultiplexer, RegisteredPrompt, RegisteredResource, RegisteredTool, UpstreamServer,

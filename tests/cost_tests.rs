@@ -245,3 +245,161 @@ fn test_calibrated_quantile_memory_gating_is_memory_relevant() {
     assert!(is_memory_relevant(0.80, &openai_profile));
 }
 
+#[test]
+fn test_conceptual_query_suppresses_operational_tool_over_retention() {
+    use chronofact::{is_conceptual_or_abstract_query, route_tools, TfidfToolRouter, ToolCandidate, ToolSchema};
+
+    let conceptual_query = "Explain how the Rust borrow checker handles lifetimes during compilation";
+    assert!(
+        is_conceptual_or_abstract_query(conceptual_query),
+        "Conceptual query must be detected"
+    );
+
+    let diagnostic_query = "Why is the build failing with error code 127 in this container?";
+    assert!(
+        !is_conceptual_or_abstract_query(diagnostic_query),
+        "Diagnostic query must NOT be detected as conceptual"
+    );
+
+    let tools = vec![
+        ToolSchema::new("read_file", "Reads file contents from disk", "core", vec![]),
+        ToolSchema::new("terminal_exec", "Executes shell commands in a terminal", "core", vec![]),
+        ToolSchema::new("search_web", "Performs web search for technical documentation", "web", vec![]),
+        ToolSchema::new("unrelated_calculator", "Computes arithmetic numbers", "math", vec![]),
+    ];
+
+    // Under conceptual query, operational primitives (terminal_exec) are pruned
+    let conceptual_selected = route_tools(conceptual_query, &tools, 0.45);
+    let conceptual_names: Vec<&str> = conceptual_selected.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        !conceptual_names.contains(&"terminal_exec"),
+        "terminal_exec must be pruned for conceptual query"
+    );
+
+    // Under diagnostic query, operational primitives are strictly retained
+    let diagnostic_selected = route_tools(diagnostic_query, &tools, 0.45);
+    let diagnostic_names: Vec<&str> = diagnostic_selected.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        diagnostic_names.contains(&"terminal_exec"),
+        "terminal_exec must be retained for diagnostic query"
+    );
+    assert!(
+        diagnostic_names.contains(&"read_file"),
+        "read_file must be retained for diagnostic query"
+    );
+
+    // Also verify router.route() with intent dictionary suppression
+    let router = TfidfToolRouter::default();
+    let candidates = vec![
+        ToolCandidate::new("terminal_exec", "Executes shell commands in a terminal", "core", vec![]),
+        ToolCandidate::new("search_web", "Performs web search for technical documentation", "web", vec![]),
+    ];
+    let route_result = router.route(conceptual_query, &candidates, 2, Some(0.45));
+    // Intent boost for 'compilation' is suppressed, so terminal_exec is pruned
+    let routed_names: Vec<&str> = route_result.selected_tools.iter().map(|t| t.tool.name.as_str()).collect();
+    assert!(
+        !routed_names.contains(&"terminal_exec"),
+        "router.route() must suppress intent boost on conceptual queries"
+    );
+}
+
+#[test]
+fn test_cache_isolated_prompt_prefix_stability() {
+    use chronofact::CostTracker;
+
+    let project_id = "tenant-enterprise-42";
+    let static_system = "You are ChronoFact Invariant Auditor. Follow all L3 reality invariants.";
+    let static_schemas = "{\"tools\": [{\"name\": \"verify_claims\"}, {\"name\": \"ground_query\"}]}";
+
+    // Turn 1: Initial user turn
+    let dynamic_anchor_turn_1 = "<chronofact_temporal_anchor>\nCURRENT_DATE: 2026-10-07\nDELTA: +248\n</chronofact_temporal_anchor>";
+    let dynamic_evidence_turn_1 = "Evidence 1: Rust 1.85 released async closures in 2025.";
+    let query_turn_1 = "Explain async closures in Rust 1.85";
+
+    let prompt_turn_1 = CostTracker::build_cache_isolated_prompt(
+        project_id,
+        static_system,
+        static_schemas,
+        dynamic_anchor_turn_1,
+        dynamic_evidence_turn_1,
+        query_turn_1,
+    );
+
+    // Turn 2: Subsequent user turn (new anchor calculation, new evidence, new query)
+    let dynamic_anchor_turn_2 = "<chronofact_temporal_anchor>\nCURRENT_DATE: 2026-10-08\nDELTA: +249\n</chronofact_temporal_anchor>";
+    let dynamic_evidence_turn_2 = "Evidence 2: GPT-6 Astra released by OpenAI.";
+    let query_turn_2 = "What provider released GPT-6 Astra?";
+
+    let prompt_turn_2 = CostTracker::build_cache_isolated_prompt(
+        project_id,
+        static_system,
+        static_schemas,
+        dynamic_anchor_turn_2,
+        dynamic_evidence_turn_2,
+        query_turn_2,
+    );
+
+    // 1. Static Cache Prefix MUST BE 100% IDENTICAL byte-for-byte across turns
+    assert_eq!(
+        prompt_turn_1.static_cache_prefix,
+        prompt_turn_2.static_cache_prefix,
+        "Static cache prefix must be byte-for-byte identical across turns to guarantee prompt cache hits"
+    );
+
+    // 2. Cache boundary marker must be present
+    assert_eq!(prompt_turn_1.cache_boundary_marker, "\n<!-- CACHE_BOUNDARY_EPHEMERAL -->\n");
+
+    // 3. Dynamic content must only exist in dynamic_context_suffix
+    assert_ne!(prompt_turn_1.dynamic_context_suffix, prompt_turn_2.dynamic_context_suffix);
+    assert!(!prompt_turn_1.static_cache_prefix.contains("2026-10-07"));
+    assert!(!prompt_turn_2.static_cache_prefix.contains("2026-10-08"));
+    assert!(prompt_turn_1.dynamic_context_suffix.contains("2026-10-07"));
+    assert!(prompt_turn_2.dynamic_context_suffix.contains("2026-10-08"));
+    assert!(prompt_turn_1.cache_aligned);
+}
+
+#[test]
+fn test_sqlite_with_busy_retry_concurrency() {
+    use chronofact::{MemoryEngine, SessionSummary};
+    use std::sync::Arc;
+    use std::thread;
+
+    let temp_dir = std::env::temp_dir().join(format!("chronofact_busy_test_{}.db", std::process::id()));
+    let engine = Arc::new(MemoryEngine::open(&temp_dir).expect("Failed to open test database"));
+
+    let num_threads = 6;
+    let ops_per_thread = 20;
+    let mut handles = Vec::new();
+
+    for t_idx in 0..num_threads {
+        let eng = Arc::clone(&engine);
+        let handle = thread::spawn(move || {
+            for i in 0..ops_per_thread {
+                let session = SessionSummary {
+                    session_id: format!("sess_{}_{}", t_idx, i),
+                    project_id: format!("proj_{}", t_idx),
+                    created_at: "2026-10-07T12:00:00Z".to_string(),
+                    summary: format!("Session {} from thread {}", i, t_idx),
+                };
+                eng.record_session(&session).expect("record_session should succeed under retry");
+                eng.record_cost_event("test query", 3, 150, 0.00045)
+                    .expect("record_cost_event should succeed under retry");
+            }
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        h.join().expect("Thread panicked");
+    }
+
+    let (queries, pruned, saved, usd) = engine.get_cost_totals().expect("Failed to get totals");
+    assert_eq!(queries, (num_threads * ops_per_thread) as u64);
+    assert_eq!(pruned, (num_threads * ops_per_thread * 3) as u64);
+    assert_eq!(saved, (num_threads * ops_per_thread * 150) as u64);
+    assert!(usd > 0.0);
+
+    let _ = std::fs::remove_file(&temp_dir);
+}
+
+

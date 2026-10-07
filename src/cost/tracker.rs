@@ -109,4 +109,72 @@ impl CostTracker {
             project_id
         )
     }
+
+    /// Isolates static system instructions, pinned tool schemas, and project invariant anchors into an
+    /// immutable static cache prefix (matching upstream Anthropic / OpenAI prompt caching requirements),
+    /// strictly separating it from dynamic temporal anchors, retrieved real-time evidence, and user queries.
+    pub fn build_cache_isolated_prompt(
+        project_id: &str,
+        static_system_instructions: &str,
+        static_schemas_json: &str,
+        temporal_anchor_header: &str,
+        dynamic_retrieved_evidence: &str,
+        user_query: &str,
+    ) -> CacheOptimizedPrompt {
+        let anchor = Self::generate_cache_aligned_prefix(project_id);
+        
+        let static_cache_prefix = format!(
+            "{}\n\
+             [STATIC CACHE PREFIX: System Prompt + Pinned Schemas + Cache Anchor]\n\
+             {}\n\n\
+             [AVAILABLE_TOOLS_SCHEMAS]\n\
+             {}",
+            anchor.trim(),
+            static_system_instructions.trim(),
+            static_schemas_json.trim()
+        );
+
+        let dynamic_context_suffix = format!(
+            "[DYNAMIC SUFFIX: Temporal Anchor Header + Retrieved Evidence + User Query]\n\
+             {}\n\n\
+             [RETRIEVED_EPISTEMIC_GROUNDING]\n\
+             {}\n\n\
+             [USER_QUERY]\n\
+             {}",
+            temporal_anchor_header.trim(),
+            dynamic_retrieved_evidence.trim(),
+            user_query.trim()
+        );
+
+        let cache_boundary_marker = "\n<!-- CACHE_BOUNDARY_EPHEMERAL -->\n".to_string();
+        let full_assembled_prompt = format!("{}{}{}", static_cache_prefix, cache_boundary_marker, dynamic_context_suffix);
+
+        let static_prefix_estimated_tokens = (static_cache_prefix.len() / 4).max(1);
+        let dynamic_suffix_estimated_tokens = (dynamic_context_suffix.len() / 4).max(1);
+
+        CacheOptimizedPrompt {
+            project_id: project_id.to_string(),
+            static_cache_prefix,
+            dynamic_context_suffix,
+            cache_boundary_marker,
+            full_assembled_prompt,
+            static_prefix_estimated_tokens,
+            dynamic_suffix_estimated_tokens,
+            cache_aligned: true,
+        }
+    }
 }
+
+/// Representation of a strictly isolated prompt preserving byte-level prompt cache prefixes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CacheOptimizedPrompt {
+    pub project_id: String,
+    pub static_cache_prefix: String,
+    pub dynamic_context_suffix: String,
+    pub cache_boundary_marker: String,
+    pub full_assembled_prompt: String,
+    pub static_prefix_estimated_tokens: usize,
+    pub dynamic_suffix_estimated_tokens: usize,
+    pub cache_aligned: bool,
+}
+
