@@ -422,7 +422,7 @@ impl McpServer {
             "chronofact_verify_claims" => {
                 let response_text = args.get("response_text").and_then(|v| v.as_str()).ok_or("Missing response_text")?;
                 let sources: Vec<crate::research::SourceChunk> = if let Some(arr) = args.get("sources") {
-                    serde_json::from_value(arr.clone()).unwrap_or_default()
+                    serde_json::from_value(arr.clone()).map_err(|e| format!("Invalid 'sources' schema (expected [{{id,title,url,content}}]): {}", e))?
                 } else {
                     Vec::new()
                 };
@@ -430,8 +430,8 @@ impl McpServer {
                 let claims = self.extractor.extract_claims(response_text);
                 let report = self.verifier.verify_claims(&claims, &sources);
 
-                let snippet = if response_text.len() > 90 {
-                    format!("{}...", &response_text[..90])
+                let snippet = if response_text.chars().count() > 90 {
+                    format!("{}...", response_text.chars().take(90).collect::<String>())
                 } else {
                     response_text.to_string()
                 };
@@ -587,9 +587,9 @@ impl McpServer {
                 ];
 
                 let routing = self.tool_router.route(query, &default_tools, top_k, None);
-                self.cost_tracker.record_savings(routing.pruned_tools, routing.tokens_saved);
-                let cost_usd = (routing.tokens_saved as f64 * 0.000003 * 10000.0).round() / 10000.0;
-                let _ = self.memory.record_cost_event(query, routing.pruned_tools, routing.tokens_saved, cost_usd);
+                // NOTE: savings here are a SIMULATION over a hardcoded 11-tool list at a flat per-tool
+                // token estimate. They are NOT recorded into the cost ledger, so chronofact_cost_metrics
+                // is never inflated by non-measured numbers.
 
                 let cache_prefix = CostTracker::generate_cache_aligned_prefix("antigravity-ide");
                 let schemas_json = serde_json::to_string_pretty(&routing.selected_tools).unwrap_or_default();
@@ -609,7 +609,8 @@ impl McpServer {
                     "estimated_savings": {
                         "tokens_saved": routing.tokens_saved,
                         "savings_percentage": routing.savings_percentage,
-                        "cost_savings_tier": "HIGH"
+                        "basis": "SIMULATED: hardcoded 11-tool default set x flat per-tool token estimate; not measured against your real tool palette or billing",
+                        "recorded_to_ledger": false
                     }
                 }))
             }

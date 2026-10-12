@@ -3,10 +3,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceChunk {
     pub id: String,            // e.g. "SRC-1"
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub url: String,
     pub content: String,
+    #[serde(default)]
     pub integrity_hash: String,
+    #[serde(default)]
     pub is_sanitized: bool,
 }
 

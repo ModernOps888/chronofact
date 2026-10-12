@@ -313,6 +313,21 @@ impl FactVerifier {
                     }
                 }
             }
+
+            // Sentence-level polarity check: a source sentence that closely overlaps the claim but
+            // carries the opposite negation polarity ("does not support", "ripped out", "replaced")
+            // contradicts it, even when the claim has no explicit support/availability verb.
+            if !contradiction_detected
+                && !CONCESSIVE_MARKERS.iter().any(|m| source_lower.contains(m) || statement_lower.contains(m))
+                && polarity_mismatch_sentence(&statement_lower, &source_lower, &claim_tokens)
+            {
+                contradiction_detected = true;
+                contradiction_source = source.id.clone();
+                contradiction_rationale = format!(
+                    "Negation polarity mismatch: a sentence in source {} overlapping the claim asserts the opposite polarity (negated vs affirmed)",
+                    contradiction_source
+                );
+            }
         }
 
         if contradiction_detected {
@@ -352,4 +367,34 @@ impl FactVerifier {
             )
         }
     }
+}
+
+const NEGATION_CUES: &[&str] = &[
+    "does not", "doesn't", "do not", "don't", "did not", "didn't", "is not", "isn't", "are not",
+    "aren't", "was not", "wasn't", "no longer", "never", "cannot", "can't", "won't", "will not",
+    "removed", "ripped out", "replaced", "dropped", "deprecated", "unsupported", "incompatible",
+    "abandoned", "discontinued", "retired", "sunset", "not supported",
+];
+
+fn has_negation_cue(text: &str) -> bool {
+    NEGATION_CUES.iter().any(|c| text.contains(c))
+}
+
+/// True when some source sentence overlaps >=50% of the claim's salient tokens but has the
+/// opposite negation polarity to the claim.
+fn polarity_mismatch_sentence(statement_lower: &str, source_lower: &str, claim_tokens: &HashSet<String>) -> bool {
+    if claim_tokens.is_empty() {
+        return false;
+    }
+    let claim_neg = has_negation_cue(statement_lower);
+    for sent in source_lower.split(|c: char| matches!(c, '.' | '!' | '?' | '\n' | ';')) {
+        if sent.trim().is_empty() {
+            continue;
+        }
+        let m = claim_tokens.iter().filter(|t| sent.contains(t.as_str())).count();
+        if m as f32 / claim_tokens.len() as f32 >= 0.5 && has_negation_cue(sent) != claim_neg {
+            return true;
+        }
+    }
+    false
 }

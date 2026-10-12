@@ -101,7 +101,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects arbitrary code execution primitives (eval, exec) or unsanitized DOM rendering.".to_string(),
-                pattern: r#"\b(?:eval\s*\(|exec\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\()"#.to_string(),
+                pattern: r#"(?:\beval\s*\(|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\()"#.to_string(),
                 remediation: "Avoid runtime string code evaluation; parse structured payloads explicitly and sanitize DOM nodes.".to_string(),
             },
             InvariantRule {
@@ -183,17 +183,24 @@ impl CodeInvariantChecker {
         let mut violations = Vec::new();
 
         // Special check: Architecture DAL leak only triggers on client/frontend/ui paths
-        let is_frontend_path = file_path.contains("frontend")
-            || file_path.contains("client")
-            || file_path.contains("ui")
-            || file_path.contains("components")
-            || file_path.contains("pages");
+        // Path-segment match (not substring): "build/guide.rs" or "quiz.rs" must not count as UI code.
+        let is_frontend_path = file_path
+            .to_lowercase()
+            .split(|c| c == '/' || c == '\\')
+            .any(|seg| matches!(seg, "frontend" | "client" | "ui" | "components" | "pages" | "app" | "views" | "src-ui"));
 
         for (idx, line) in lines.iter().enumerate() {
             let line_num = idx + 1;
             let trimmed = line.trim();
 
-            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") {
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("/*")
+                || trimmed == "*"
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("*/")
+            {
                 continue;
             }
 
