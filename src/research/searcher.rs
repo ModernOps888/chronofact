@@ -37,18 +37,22 @@ impl SearchEngine {
     pub async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SourceChunk>, String> {
         let mut results = Vec::new();
 
-        // 0. Extract candidate package tokens and probe live package registries (crates.io, npm, PyPI)
-        let candidate_tokens: Vec<String> = query
-            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-            .filter(|w| w.len() >= 3)
-            .map(|s| s.to_string())
-            .collect();
-
-        let pkg_sources = self.package_client.ground_query_packages(&candidate_tokens).await;
-        for s in pkg_sources {
-            if results.len() < max_results {
-                results.push(s);
+        // 0. Live package-registry evidence for curated packages named in the query (own ecosystem only).
+        //    Registry text is third-party content: it goes through the same SSRF check and
+        //    sanitizer as web results, and the integrity hash is of the original text.
+        let pkg_sources = self.package_client.ground_query_packages(query).await;
+        for mut s in pkg_sources {
+            if results.len() >= max_results {
+                break;
             }
+            if SecurityValidator::validate_outbound_url(&s.url).is_err() {
+                continue;
+            }
+            let sanitized = self.sanitizer.sanitize_external_evidence(&s.content, &s.url);
+            s.content = sanitized.safe_text;
+            s.integrity_hash = sanitized.original_hash;
+            s.is_sanitized = true;
+            results.push(s);
         }
 
         if results.len() >= max_results {

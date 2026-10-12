@@ -94,3 +94,19 @@ fn attestation_is_unsigned_without_key_and_verifies_with_key() {
     assert!(AttestationEngine::verify_signature(&signed, Some("k1")));
     assert!(!AttestationEngine::verify_signature(&signed, Some("k2")));
 }
+
+#[test]
+fn registry_candidates_are_curated_not_every_word() {
+    use chronofact::{PackageEcosystem, PackageRegistryClient};
+    let c = PackageRegistryClient::candidates_from_query("What is the latest version of tokio and react?");
+    let names: Vec<&str> = c.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["tokio", "react"], "only curated packages, never English words");
+    assert_eq!(c[0].1, PackageEcosystem::Cargo);
+    assert_eq!(c[1].1, PackageEcosystem::Npm);
+    // alias mapping + dedupe + cap
+    let c = PackageRegistryClient::candidates_from_query("tailwind tailwindcss vue svelte nuxt astro hono");
+    assert_eq!(c.len(), 4);
+    assert_eq!(c[0].0, "tailwindcss");
+    // no candidates for plain prose
+    assert!(PackageRegistryClient::candidates_from_query("what is the latest version of the thing").is_empty());
+}

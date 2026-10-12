@@ -12,6 +12,36 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 const CACHE_TTL: Duration = Duration::from_secs(3600); // 1 hour memory TTL
+const MAX_REGISTRY_CANDIDATES: usize = 4;
+
+/// Curated query-token -> (registry package name, ecosystem). Aliases map to the real package
+/// name (e.g. "tailwind" -> "tailwindcss"). Extend deliberately; do not replace with a wordlist probe.
+fn known_package(tok: &str) -> Option<(&'static str, PackageEcosystem)> {
+    use PackageEcosystem::*;
+    Some(match tok {
+        // crates.io
+        "tokio" => ("tokio", Cargo), "axum" => ("axum", Cargo), "actix" | "actix-web" => ("actix-web", Cargo),
+        "serde" => ("serde", Cargo), "reqwest" => ("reqwest", Cargo), "sqlx" => ("sqlx", Cargo),
+        "diesel" => ("diesel", Cargo), "polars" => ("polars", Cargo), "tauri" => ("tauri", Cargo),
+        "bevy" => ("bevy", Cargo), "tracing" => ("tracing", Cargo), "clap" => ("clap", Cargo),
+        "rusqlite" => ("rusqlite", Cargo), "hyper" => ("hyper", Cargo),
+        // npm
+        "react" => ("react", Npm), "vite" => ("vite", Npm), "next" | "nextjs" | "next.js" => ("next", Npm),
+        "tailwind" | "tailwindcss" => ("tailwindcss", Npm), "svelte" => ("svelte", Npm), "vue" => ("vue", Npm),
+        "nuxt" => ("nuxt", Npm), "astro" => ("astro", Npm), "typescript" => ("typescript", Npm),
+        "eslint" => ("eslint", Npm), "webpack" => ("webpack", Npm), "esbuild" => ("esbuild", Npm),
+        "rollup" => ("rollup", Npm), "prisma" => ("prisma", Npm), "zod" => ("zod", Npm),
+        "vitest" => ("vitest", Npm), "jest" => ("jest", Npm), "playwright" => ("playwright", Npm),
+        "hono" => ("hono", Npm), "express" => ("express", Npm), "drizzle" => ("drizzle-orm", Npm),
+        // PyPI
+        "pydantic" => ("pydantic", PyPi), "fastapi" => ("fastapi", PyPi), "django" => ("django", PyPi),
+        "flask" => ("flask", PyPi), "numpy" => ("numpy", PyPi), "pandas" => ("pandas", PyPi),
+        "scipy" => ("scipy", PyPi), "pytorch" | "torch" => ("torch", PyPi), "tensorflow" => ("tensorflow", PyPi),
+        "langchain" => ("langchain", PyPi), "transformers" => ("transformers", PyPi),
+        "celery" => ("celery", PyPi), "sqlalchemy" => ("sqlalchemy", PyPi), "requests" => ("requests", PyPi),
+        _ => return None,
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PackageEcosystem {
@@ -72,12 +102,17 @@ impl PackageMetadata {
                 _ => "https://chronofact.dev".to_string(),
             });
 
+        let integrity_hash = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(content.as_bytes()))
+        };
+
         SourceChunk {
             id: format!("REG-{}-{}", self.ecosystem.to_uppercase(), self.name),
             title: format!("Verified {} Registry: {} v{}", self.ecosystem, self.name, self.latest_version),
             url,
             content,
-            integrity_hash: format!("sha256:{}:{}", self.name, self.latest_version),
+            integrity_hash,
             is_sanitized: true,
         }
     }
@@ -265,27 +300,43 @@ impl PackageRegistryClient {
         Ok(meta)
     }
 
-    /// Discovers packages mentioned in a freeform query and queries registries in parallel.
-    pub async fn ground_query_packages(&self, candidate_tokens: &[String]) -> Vec<SourceChunk> {
-        let mut chunks = Vec::new();
-        for token in candidate_tokens {
-            let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            if clean.len() < 3 {
+    /// Extracts package candidates from a freeform query. Only names found in the curated
+    /// ecosystem tables below are considered: probing every word of a query against three
+    /// public registries returns junk ("the", "latest", "version" are all real package names)
+    /// and burns rate limit. Result is deduplicated and capped.
+    pub fn candidates_from_query(query: &str) -> Vec<(String, PackageEcosystem)> {
+        let mut out: Vec<(String, PackageEcosystem)> = Vec::new();
+        let lower = query.to_lowercase();
+        for tok in lower.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '/')) {
+            let tok = tok.trim_matches(|c: char| c == '-' || c == '_' || c == '/');
+            if tok.is_empty() {
                 continue;
             }
+            if let Some((pkg, eco)) = known_package(tok) {
+                if !out.iter().any(|(n, e)| n == pkg && *e == eco) {
+                    out.push((pkg.to_string(), eco));
+                }
+            }
+            if out.len() >= MAX_REGISTRY_CANDIDATES {
+                break;
+            }
+        }
+        out
+    }
 
-            // Probe Cargo
-            if let Ok(meta) = self.lookup_crate(clean).await {
-                chunks.push(meta.to_source_chunk());
-                continue;
-            }
-            // Probe NPM
-            if let Ok(meta) = self.lookup_npm(clean).await {
-                chunks.push(meta.to_source_chunk());
-                continue;
-            }
-            // Probe PyPI
-            if let Ok(meta) = self.lookup_pypi(clean).await {
+    pub async fn lookup(&self, name: &str, eco: &PackageEcosystem) -> Result<PackageMetadata, String> {
+        match eco {
+            PackageEcosystem::Cargo => self.lookup_crate(name).await,
+            PackageEcosystem::Npm => self.lookup_npm(name).await,
+            PackageEcosystem::PyPi => self.lookup_pypi(name).await,
+        }
+    }
+
+    /// Looks up every curated package mentioned in the query, in its own ecosystem only.
+    pub async fn ground_query_packages(&self, query: &str) -> Vec<SourceChunk> {
+        let mut chunks = Vec::new();
+        for (name, eco) in Self::candidates_from_query(query) {
+            if let Ok(meta) = self.lookup(&name, &eco).await {
                 chunks.push(meta.to_source_chunk());
             }
         }
