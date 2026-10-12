@@ -80,7 +80,21 @@ impl HorizonCalculator {
             String::new()
         };
 
-        let calibration_block = format!(
+        let calibration_block = if !requires_grounding && outdated_warnings.is_empty() {
+            // Nothing in the query needs fresh facts: keep the date/freeze fact, drop the long lecture.
+            format!(
+                "<chronofact_temporal_anchor>\n\
+                [SYSTEM TEMPORAL CALIBRATION ANCHOR]\n\
+                CURRENT_EVALUATION_DATE: {} | MODEL: {} | TRAINING_FREEZE: {} (+{} days) | QUERY_TEMPORAL_RISK: {:.2} | GROUNDING_MANDATORY: NO\n\
+                </chronofact_temporal_anchor>",
+                current_date.format("%Y-%m-%d"),
+                model.display_name,
+                model.estimated_training_freeze.format("%Y-%m-%d"),
+                days_post_freeze,
+                scan.temporal_risk_score,
+            )
+        } else {
+            format!(
             "<chronofact_temporal_anchor>\n\
             [SYSTEM TEMPORAL CALIBRATION ANCHOR]\n\
             CURRENT_EVALUATION_DATE: {}\n\
@@ -106,7 +120,8 @@ impl HorizonCalculator {
             scan.temporal_risk_score,
             if requires_grounding { "YES" } else { "NO" },
             warning_section
-        );
+            )
+        };
 
         HorizonAnalysis {
             current_date,

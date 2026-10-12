@@ -2,6 +2,7 @@ use super::extractor::{ContentExtractor, SourceChunk};
 use crate::security::{ContentSanitizer, SecurityValidator};
 use scraper::{Html, Selector};
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -10,12 +11,53 @@ pub struct SearchEngine {
     client: reqwest::Client,
     sanitizer: Arc<ContentSanitizer>,
     package_client: Arc<super::package_registry::PackageRegistryClient>,
+    eol_client: Arc<super::eol::EolClient>,
 }
 
 impl Default for SearchEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Unix seconds until which the DuckDuckGo scraper is considered blocked (anti-bot challenge).
+static DDG_BLOCKED_UNTIL: AtomicU64 = AtomicU64::new(0);
+const DDG_BLOCK_SECS: u64 = 900;
+const DDG_ERROR_BACKOFF_SECS: u64 = 120;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// True if a search-engine response is an anti-bot wall rather than results
+/// (DuckDuckGo answers 202 + `anomaly` form, 403, or 429).
+pub fn is_block_response(status: u16, body: &str) -> bool {
+    matches!(status, 202 | 403 | 429) || body.contains("anomaly.js") || body.contains("anomaly-modal")
+}
+
+/// Cheap relevance gate: engines that serve a degraded index to bots return unrelated pages
+/// (observed: "latest axum crate" -> UK news). A result must share a content word with the query.
+pub fn result_is_relevant(query: &str, title: &str, snippet: &str, url: &str) -> bool {
+    const GENERIC: &[&str] = &[
+        "the", "and", "for", "what", "which", "latest", "newest", "new", "version", "release", "released",
+        "stable", "current", "how", "when", "does", "with", "from", "that", "this", "are", "was", "has",
+        "have", "about", "into", "using", "use",
+    ];
+    let q = query.to_lowercase();
+    let words: Vec<&str> = q
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3 && !GENERIC.contains(w))
+        .collect();
+    if words.is_empty() {
+        return true;
+    }
+    let hay = format!("{} {} {}", title, snippet, url).to_lowercase();
+    let hits = words.iter().filter(|w| hay.contains(**w)).count();
+    // one content word suffices for short queries; longer queries need two
+    hits >= if words.len() >= 3 { 2 } else { 1 }
 }
 
 impl SearchEngine {
@@ -31,17 +73,20 @@ impl SearchEngine {
             client,
             sanitizer: Arc::new(ContentSanitizer::new()),
             package_client: Arc::new(super::package_registry::PackageRegistryClient::new()),
+            eol_client: Arc::new(super::eol::EolClient::new()),
         }
     }
 
     pub async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SourceChunk>, String> {
         let mut results = Vec::new();
 
-        // 0. Live package-registry evidence for curated packages named in the query (own ecosystem only).
-        //    Registry text is third-party content: it goes through the same SSRF check and
-        //    sanitizer as web results, and the integrity hash is of the original text.
-        let pkg_sources = self.package_client.ground_query_packages(query).await;
-        for mut s in pkg_sources {
+        // 0. Live keyless API evidence: package registries (curated + explicitly named packages)
+        //    and endoflife.date release/support status. This is third-party content: it goes through
+        //    the same SSRF check and sanitizer as web results, and the integrity hash is of the
+        //    original text.
+        let mut api_sources = self.package_client.ground_query_packages(query).await;
+        api_sources.extend(self.eol_client.ground_query(query).await);
+        for mut s in api_sources {
             if results.len() >= max_results {
                 break;
             }
@@ -84,22 +129,39 @@ impl SearchEngine {
     }
 
     async fn search_duckduckgo(&self, query: &str, max_results: usize) -> Result<Vec<SourceChunk>, String> {
+        if unix_now() < DDG_BLOCKED_UNTIL.load(Ordering::Relaxed) {
+            return Ok(Vec::new());
+        }
         let url = "https://html.duckduckgo.com/html/";
         let params = [("q", query)];
 
-        let response = match self.client.post(url).form(&params).send().await {
-            Ok(resp) if resp.status().is_success() => resp,
+        let response = match self.client.post(url).timeout(Duration::from_secs(4)).form(&params).send().await {
+            Ok(resp) if resp.status().is_success() && resp.status().as_u16() != 202 => resp,
             Ok(resp) => {
-                warn!("DuckDuckGo search returned non-success HTTP status: {}", resp.status());
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                if is_block_response(status, &body) {
+                    DDG_BLOCKED_UNTIL.store(unix_now() + DDG_BLOCK_SECS, Ordering::Relaxed);
+                    warn!("DuckDuckGo anti-bot wall (HTTP {}); web scraper paused for {}s", status, DDG_BLOCK_SECS);
+                } else {
+                    warn!("DuckDuckGo search returned non-success HTTP status: {}", status);
+                }
                 return Ok(Vec::new());
             }
             Err(e) => {
-                warn!("DuckDuckGo search request failed: {}", e);
+                // Timeouts/connection resets are how some networks "block" scrapers: back off briefly.
+                DDG_BLOCKED_UNTIL.store(unix_now() + DDG_ERROR_BACKOFF_SECS, Ordering::Relaxed);
+                warn!("DuckDuckGo search request failed: {}; web scraper paused for {}s", e, DDG_ERROR_BACKOFF_SECS);
                 return Ok(Vec::new());
             }
         };
 
         let html_text = response.text().await.unwrap_or_default();
+        if is_block_response(200, &html_text) {
+            DDG_BLOCKED_UNTIL.store(unix_now() + DDG_BLOCK_SECS, Ordering::Relaxed);
+            warn!("DuckDuckGo served an anti-bot challenge; web scraper paused for {}s", DDG_BLOCK_SECS);
+            return Ok(Vec::new());
+        }
         let document = Html::parse_document(&html_text);
 
         let result_selector = Selector::parse(".result").map_err(|e| format!("{:?}", e))?;
@@ -138,6 +200,11 @@ impl SearchEngine {
                 .unwrap_or_default();
 
             if snippet.trim().is_empty() || resolved_url.trim().is_empty() {
+                continue;
+            }
+
+            // Degraded-index guard: drop results unrelated to the query
+            if !result_is_relevant(query, &title, &snippet, &resolved_url) {
                 continue;
             }
 

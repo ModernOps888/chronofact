@@ -1,3 +1,4 @@
+pub mod eol;
 pub mod extractor;
 pub mod package_registry;
 pub mod searcher;
