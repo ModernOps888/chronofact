@@ -189,3 +189,37 @@ fn invariants_catch_python_sqli_shell_true_and_string_timers_without_false_posit
         assert!(!hit(p, code), "must not flag: {code}");
     }
 }
+
+
+#[test]
+fn mcp_stdout_carries_only_json_rpc_even_with_verbose_logging() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_chronofact"))
+        .arg("mcp")
+        .env("RUST_LOG", "debug")
+        // Force the web search to fail offline so a WARN log is emitted (reproduces the stdout-pollution bug).
+        .env("HTTPS_PROXY", "http://127.0.0.1:1")
+        .env("HTTP_PROXY", "http://127.0.0.1:1")
+        .env("CHRONOFACT_DB", std::env::temp_dir().join("cf_stdout_test.db"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn chronofact mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"t","version":"1"}}}}}}"#).unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"chronofact_ground_query","arguments":{{"query":"latest version of foobar library","max_results":3}}}}}}"#).unwrap();
+    drop(stdin);
+    let reader = BufReader::new(child.stdout.take().unwrap());
+    let mut n = 0;
+    for line in reader.lines() {
+        let line = line.unwrap();
+        if line.trim().is_empty() { continue; }
+        assert!(serde_json::from_str::<serde_json::Value>(&line).is_ok(), "non-JSON line on MCP stdout: {line:?}");
+        n += 1;
+    }
+    let _ = child.wait();
+    assert!(n >= 2, "expected initialize + ground_query responses, got {n}");
+}
