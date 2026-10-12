@@ -9,6 +9,7 @@ use tracing::warn;
 pub struct SearchEngine {
     client: reqwest::Client,
     sanitizer: Arc<ContentSanitizer>,
+    package_client: Arc<super::package_registry::PackageRegistryClient>,
 }
 
 impl Default for SearchEngine {
@@ -29,15 +30,39 @@ impl SearchEngine {
         Self {
             client,
             sanitizer: Arc::new(ContentSanitizer::new()),
+            package_client: Arc::new(super::package_registry::PackageRegistryClient::new()),
         }
     }
 
     pub async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SourceChunk>, String> {
+        let mut results = Vec::new();
+
+        // 0. Extract candidate package tokens and probe live package registries (crates.io, npm, PyPI)
+        let candidate_tokens: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+            .filter(|w| w.len() >= 3)
+            .map(|s| s.to_string())
+            .collect();
+
+        let pkg_sources = self.package_client.ground_query_packages(&candidate_tokens).await;
+        for s in pkg_sources {
+            if results.len() < max_results {
+                results.push(s);
+            }
+        }
+
+        if results.len() >= max_results {
+            return Ok(results);
+        }
+
+        let remaining = max_results - results.len();
+
         // 1. Check if user configured Tavily API
         if let Ok(tavily_key) = env::var("TAVILY_API_KEY") {
             if !tavily_key.trim().is_empty() {
-                if let Ok(results) = self.search_tavily(&tavily_key, query, max_results).await {
-                    if !results.is_empty() {
+                if let Ok(web_results) = self.search_tavily(&tavily_key, query, remaining).await {
+                    results.extend(web_results);
+                    if results.len() >= max_results {
                         return Ok(results);
                     }
                 }
@@ -45,7 +70,13 @@ impl SearchEngine {
         }
 
         // 2. Default: DuckDuckGo HTML scraper
-        self.search_duckduckgo(query, max_results).await
+        if results.len() < max_results {
+            if let Ok(ddg_results) = self.search_duckduckgo(query, max_results - results.len()).await {
+                results.extend(ddg_results);
+            }
+        }
+
+        Ok(results)
     }
 
     async fn search_duckduckgo(&self, query: &str, max_results: usize) -> Result<Vec<SourceChunk>, String> {

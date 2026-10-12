@@ -33,7 +33,10 @@ pub use memory::{
 };
 
 pub use proxy::{ApiServer, AppState};
-pub use research::{ContentExtractor, SearchEngine, SourceChunk};
+pub use research::{
+    ContentExtractor, PackageEcosystem, PackageMetadata, PackageRegistryClient, SearchEngine,
+    SourceChunk,
+};
 pub use security::{ContentSanitizer, RateLimiter, SecurityError, SecurityValidator};
 pub use temporal::{HorizonAnalysis, HorizonCalculator, ModelHorizon, ModelRegistry, TemporalScanner};
 
