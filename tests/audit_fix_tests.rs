@@ -110,3 +110,82 @@ fn registry_candidates_are_curated_not_every_word() {
     // no candidates for plain prose
     assert!(PackageRegistryClient::candidates_from_query("what is the latest version of the thing").is_empty());
 }
+
+
+// ---------------------------------------------------------------------------
+// Fix batch 3: clause-scoped verifier, scanner entities, invariant patterns.
+// Cases include controls (must NOT fire) so the fixes cannot pass by over-matching.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verifier_concession_about_something_else_does_not_contradict_or_block_entailment() {
+    let s = [src("S", "Deno 2 is compatible with most npm packages, although some native addons are incompatible.")];
+    assert_eq!(verify("Deno 2 is compatible with most npm packages.", &s), VerificationStatus::Entailed);
+    let s = [src("S", "Fastify 5 is compatible with Node 20 but incompatible with Node 14.")];
+    assert_eq!(verify("Fastify 5 is compatible with Node 20.", &s), VerificationStatus::Entailed);
+    let s = [src("S", "Bun 1.3 supports Windows natively, although some APIs are unsupported.")];
+    assert_eq!(verify("Bun 1.3 supports Windows natively.", &s), VerificationStatus::Entailed);
+}
+
+#[test]
+fn verifier_still_contradicts_when_negation_is_about_the_claim() {
+    let s = [src("S", "Rust 2024 edition is unavailable on stable.")];
+    assert_eq!(verify("Rust 2024 edition is available.", &s), VerificationStatus::Contradicted);
+    let s = [src("S", "Next.js 16 removed the Pages Router entirely.")];
+    assert_eq!(verify("Next.js 16 supports the Pages Router.", &s), VerificationStatus::Contradicted);
+    let s = [src("S", "Svelte 5 is not stable.")];
+    assert_eq!(verify("Svelte 5 is stable.", &s), VerificationStatus::Contradicted);
+    // a claim that is itself negated must not be contradicted by a matching negated source
+    let s = [src("S", "The legacy API is unsupported in v3.")];
+    assert_ne!(verify("The legacy API is not supported in v3.", &s), VerificationStatus::Contradicted);
+}
+
+#[test]
+fn scanner_new_entities_flag_and_plain_go_does_not() {
+    let sc = TemporalScanner::new();
+    for q in [
+        "What's new in Bun 1.3?",
+        "Breaking changes in Fastify 5?",
+        "Migrating a LangChain app to LangGraph",
+        "Go 1.25 release notes",
+        "Latest Hono middleware for JWT auth",
+    ] {
+        assert!(sc.scan(q).requires_search, "should require grounding: {q}");
+    }
+    for q in [
+        "How do I go about learning recursion?",
+        "Let's go through the binary search algorithm step by step.",
+        "Can you go over how hash maps handle collisions?",
+        "Explain the difference between a mutex and a semaphore.",
+    ] {
+        assert!(!sc.scan(q).requires_search, "must not require grounding: {q}");
+    }
+}
+
+#[test]
+fn invariants_catch_python_sqli_shell_true_and_string_timers_without_false_positives() {
+    let c = CodeInvariantChecker::new();
+    let hit = |path: &str, code: &str| c.audit_code(path, code, None).violations_count > 0;
+    for (p, code) in [
+        ("a.py", "cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")"),
+        ("a.py", "cur.execute(\"DELETE FROM t WHERE id = {}\".format(i))"),
+        ("a.py", "cur.execute(\"SELECT * FROM t WHERE n = '%s'\" % name)"),
+        ("a.py", "subprocess.run(cmd, shell=True)"),
+        ("a.py", "subprocess.Popen(args, shell=True)"),
+        ("a.js", "setTimeout(\"alert(1)\", 0)"),
+        ("a.js", "setInterval(\"tick()\", 1000)"),
+    ] {
+        assert!(hit(p, code), "should flag: {code}");
+    }
+    for (p, code) in [
+        ("a.py", "cur.execute(\"SELECT * FROM t WHERE id = %s\", (uid,))"),
+        ("a.py", "cursor.execute(\"SELECT * FROM users WHERE id = ?\", (user_id,))"),
+        ("a.py", "subprocess.run([\"ls\", \"-l\"], shell=False)"),
+        ("a.py", "subprocess.run(cmd)"),
+        ("a.py", "print(f\"Delete {n} files\")"),
+        ("a.js", "setTimeout(() => run(), 100)"),
+        ("a.js", "setTimeout(fn, 100)"),
+    ] {
+        assert!(!hit(p, code), "must not flag: {code}");
+    }
+}

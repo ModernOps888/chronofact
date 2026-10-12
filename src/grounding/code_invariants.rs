@@ -92,7 +92,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects direct string concatenation or formatting inside SQL queries, risking SQL injection.".to_string(),
-                pattern: r#"(?i)(?:format!\s*\(\s*["'].*(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER).*\{|\b(?:SELECT|INSERT|UPDATE|DELETE)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_]))"#.to_string(),
+                pattern: r#"(?i)(?:format!\s*\(\s*["'].*(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER).*\{|\b(?:SELECT|INSERT|UPDATE|DELETE)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
                 remediation: "Use parameterized queries ($1, ?), prepared statements, or an approved query builder/ORM.".to_string(),
             },
             InvariantRule {
@@ -101,7 +101,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects arbitrary code execution primitives (eval, exec) or unsanitized DOM rendering.".to_string(),
-                pattern: r#"(?:\beval\s*\(|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\()"#.to_string(),
+                pattern: r#"(?:\beval\s*\(|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\(|\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True|\bset(?:Timeout|Interval)\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*[,)])"#.to_string(),
                 remediation: "Avoid runtime string code evaluation; parse structured payloads explicitly and sanitize DOM nodes.".to_string(),
             },
             InvariantRule {

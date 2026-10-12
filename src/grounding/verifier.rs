@@ -218,6 +218,9 @@ impl FactVerifier {
 
         let negations = [
             "not supported",
+            "not available",
+            "not compatible",
+            "unavailable",
             "deprecated",
             "removed",
             "no longer",
@@ -245,17 +248,13 @@ impl FactVerifier {
             ("server-side", "client-side"),
         ];
 
-        const CONCESSIVE_MARKERS: &[&str] = &[
-            "although",
-            "even though",
-            "despite",
-            "temporarily restored",
-            "restored behind a feature flag",
-            "behind a feature flag",
-            "behind a flag",
-            "opt-in via",
-            "opt-in through",
-        ];
+        // Salient claim words, normalised for word-level (not substring) clause matching.
+        let claim_norm: HashSet<String> = claim_tokens.iter().map(|t| norm_word(t)).collect();
+        let claim_asserts_support = ["supports", "supported", "added", "available", "compatible"]
+            .iter()
+            .any(|t| has_word_phrase(&statement_lower, t));
+        let claim_negated = has_negation_cue(&statement_lower);
+        let claim_has_concessive = CONCESSIVE_MARKERS.iter().any(|m| statement_lower.contains(m));
 
         for source in sources {
             let source_lower = source.content.to_lowercase();
@@ -275,34 +274,45 @@ impl FactVerifier {
                 best_overlap = overlap_ratio;
             }
 
-            // Check for concessive clauses or temporary qualifications
-            if CONCESSIVE_MARKERS.iter().any(|m| source_lower.contains(m) || statement_lower.contains(m)) {
+            // Clause-scoped analysis: a negation / antonym only counts against the claim when it
+            // sits in a clause that is actually about the claim ("X is compatible with Y, although
+            // some native addons are incompatible" must not contradict "X is compatible with Y").
+            let src_clauses = split_clauses(&source_lower);
+
+            // Concessive / temporary qualification only creates ambiguity when it is in scope of the claim.
+            let concessive_applies = claim_has_concessive || concessive_in_scope(&source_lower, &claim_norm);
+            if concessive_applies {
                 concessive_source_found = true;
             }
 
-            // Check if claim asserts support/availability while source asserts deprecation/removal
-            for neg in &negations {
-                if source_lower.contains(neg)
-                    && (statement_lower.contains("supports")
-                        || statement_lower.contains("supported")
-                        || statement_lower.contains("added")
-                        || statement_lower.contains("available")
-                        || statement_lower.contains("compatible"))
-                    && (matches >= 2 || overlap_ratio >= 0.25)
-                {
-                    contradiction_detected = true;
-                    contradiction_source = source.id.clone();
-                    contradiction_rationale = format!("Potential contradiction identified with source {}: contradictory status detected", contradiction_source);
-                    break;
+            // Claim asserts support/availability while a claim-relevant source clause asserts deprecation/removal
+            if claim_asserts_support && !claim_negated {
+                'neg: for cl in &src_clauses {
+                    if negations.iter().any(|neg| has_word_phrase(cl, neg)) {
+                        let (m, r) = clause_overlap(&claim_norm, cl);
+                        if m >= 2 && r >= 0.34 {
+                            contradiction_detected = true;
+                            contradiction_source = source.id.clone();
+                            contradiction_rationale = format!("Potential contradiction identified with source {}: contradictory status detected", contradiction_source);
+                            break 'neg;
+                        }
+                    }
                 }
             }
 
             // Check for semantic polarity antonym inversion in overlapping scope
             for &(claim_term, source_term) in POLARITY_ANTONYMS {
-                if statement_lower.contains(claim_term) && source_lower.contains(source_term) && matches >= 2 {
+                if !claim_negated && has_word_phrase(&statement_lower, claim_term) && matches >= 2 {
                     let scoped_contexts = ["in production", "by default", "in staging", "globally", "default in production"];
                     let same_scope = scoped_contexts.iter().any(|sc| statement_lower.contains(sc) && source_lower.contains(sc));
-                    if same_scope || overlap_ratio >= 0.40 {
+                    let hit = src_clauses.iter().any(|cl| {
+                        if !has_word_phrase(cl, source_term) {
+                            return false;
+                        }
+                        let (m, r) = clause_overlap(&claim_norm, cl);
+                        (same_scope && m >= 1) || (m >= 2 && r >= 0.40)
+                    });
+                    if hit {
                         contradiction_detected = true;
                         contradiction_source = source.id.clone();
                         contradiction_rationale = format!(
@@ -314,21 +324,22 @@ impl FactVerifier {
                 }
             }
 
-            // Sentence-level polarity check: a source sentence that closely overlaps the claim but
+            // Clause-level polarity check: a source clause that closely overlaps the claim but
             // carries the opposite negation polarity ("does not support", "ripped out", "replaced")
             // contradicts it, even when the claim has no explicit support/availability verb.
             if !contradiction_detected
-                && !CONCESSIVE_MARKERS.iter().any(|m| source_lower.contains(m) || statement_lower.contains(m))
-                && polarity_mismatch_sentence(&statement_lower, &source_lower, &claim_tokens)
+                && !concessive_applies
+                && polarity_mismatch_clause(&src_clauses, &claim_norm, claim_negated)
             {
                 contradiction_detected = true;
                 contradiction_source = source.id.clone();
                 contradiction_rationale = format!(
-                    "Negation polarity mismatch: a sentence in source {} overlapping the claim asserts the opposite polarity (negated vs affirmed)",
+                    "Negation polarity mismatch: a clause in source {} overlapping the claim asserts the opposite polarity (negated vs affirmed)",
                     contradiction_source
                 );
             }
         }
+
 
         if contradiction_detected {
             (
@@ -373,26 +384,162 @@ const NEGATION_CUES: &[&str] = &[
     "does not", "doesn't", "do not", "don't", "did not", "didn't", "is not", "isn't", "are not",
     "aren't", "was not", "wasn't", "no longer", "never", "cannot", "can't", "won't", "will not",
     "removed", "ripped out", "replaced", "dropped", "deprecated", "unsupported", "incompatible",
-    "abandoned", "discontinued", "retired", "sunset", "not supported",
+    "unavailable", "abandoned", "discontinued", "retired", "sunset", "not supported",
 ];
 
-fn has_negation_cue(text: &str) -> bool {
-    NEGATION_CUES.iter().any(|c| text.contains(c))
+const CONCESSIVE_MARKERS: &[&str] = &[
+    "although",
+    "even though",
+    "despite",
+    "temporarily restored",
+    "restored behind a feature flag",
+    "behind a feature flag",
+    "behind a flag",
+    "opt-in via",
+    "opt-in through",
+];
+
+/// Markers that qualify the predicate they are attached to (rather than introducing a trailing
+/// clause); for these the whole sentence is treated as in scope.
+const SENTENCE_WIDE_MARKERS: &[&str] = &[
+    "temporarily restored",
+    "restored behind a feature flag",
+    "behind a feature flag",
+    "behind a flag",
+    "opt-in via",
+    "opt-in through",
+];
+
+/// Contrastive conjunctions that start a new clause for polarity / negation scoping.
+const CONTRAST_WORDS: &[&str] = &["but", "however", "although", "though", "while", "whereas", "except", "yet"];
+
+/// Whole-word (or whole-phrase) containment: "available" does not match inside "unavailable".
+fn has_word_phrase(text: &str, phrase: &str) -> bool {
+    let mut from = 0;
+    while let Some(pos) = text[from..].find(phrase) {
+        let start = from + pos;
+        let end = start + phrase.len();
+        let before_ok = text[..start].chars().next_back().map_or(true, |c| !c.is_alphanumeric());
+        let after_ok = text[end..].chars().next().map_or(true, |c| !c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + text[start..].chars().next().map_or(1, |c| c.len_utf8());
+        if from >= text.len() {
+            break;
+        }
+    }
+    false
 }
 
-/// True when some source sentence overlaps >=50% of the claim's salient tokens but has the
+fn has_negation_cue(text: &str) -> bool {
+    NEGATION_CUES.iter().any(|c| has_word_phrase(text, c))
+}
+
+/// Light normalisation (plural strip) so "supports"/"support" compare equal at word level.
+fn norm_word(w: &str) -> String {
+    let w = w.to_lowercase();
+    if w.len() > 4 && w.ends_with('s') && !w.ends_with("ss") {
+        w[..w.len() - 1].to_string()
+    } else {
+        w
+    }
+}
+
+/// Split into sentences on . ! ? ; and newlines. A '.' only terminates a sentence when followed by
+/// whitespace or end of text, so versions like "1.3" or "v2.0" stay intact.
+fn split_sentences(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let boundary = match c {
+            '!' | '?' | ';' | '\n' => true,
+            '.' => chars.get(i + 1).map_or(true, |n| n.is_whitespace()),
+            _ => false,
+        };
+        if boundary {
+            if !cur.trim().is_empty() {
+                out.push(cur.trim().to_string());
+            }
+            cur.clear();
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// Sentences further split at contrastive conjunctions ("but", "although", "however", ...).
+fn split_clauses(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for sent in split_sentences(text) {
+        let mut cur: Vec<&str> = Vec::new();
+        for tok in sent.split_whitespace() {
+            let bare = tok.trim_matches(|c: char| !c.is_alphanumeric());
+            if CONTRAST_WORDS.contains(&bare) {
+                if !cur.is_empty() {
+                    out.push(cur.join(" "));
+                    cur.clear();
+                }
+            } else {
+                cur.push(tok);
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur.join(" "));
+        }
+    }
+    out
+}
+
+/// Word-level overlap between normalised claim tokens and a clause: (matched, ratio).
+fn clause_overlap(claim_norm: &HashSet<String>, clause: &str) -> (usize, f32) {
+    if claim_norm.is_empty() {
+        return (0, 0.0);
+    }
+    let words: HashSet<String> = clause
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(norm_word)
+        .collect();
+    let m = claim_norm.iter().filter(|t| words.contains(t.as_str())).count();
+    (m, m as f32 / claim_norm.len() as f32)
+}
+
+/// True when a concessive / temporary-qualification marker sits in a part of the source that is
+/// actually about the claim. A trailing "although ..." clause about something else does not count.
+fn concessive_in_scope(source_lower: &str, claim_norm: &HashSet<String>) -> bool {
+    for sent in split_sentences(source_lower) {
+        for m in CONCESSIVE_MARKERS {
+            if let Some(pos) = sent.find(m) {
+                let scope: &str = if SENTENCE_WIDE_MARKERS.contains(m) || sent[..pos].trim().is_empty() {
+                    &sent
+                } else {
+                    &sent[pos..]
+                };
+                let (matched, ratio) = clause_overlap(claim_norm, scope);
+                if matched >= 1 && ratio >= 0.25 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// True when some source clause overlaps >=50% of the claim's salient tokens but has the
 /// opposite negation polarity to the claim.
-fn polarity_mismatch_sentence(statement_lower: &str, source_lower: &str, claim_tokens: &HashSet<String>) -> bool {
-    if claim_tokens.is_empty() {
+fn polarity_mismatch_clause(clauses: &[String], claim_norm: &HashSet<String>, claim_neg: bool) -> bool {
+    if claim_norm.is_empty() {
         return false;
     }
-    let claim_neg = has_negation_cue(statement_lower);
-    for sent in source_lower.split(|c: char| matches!(c, '.' | '!' | '?' | '\n' | ';')) {
-        if sent.trim().is_empty() {
-            continue;
-        }
-        let m = claim_tokens.iter().filter(|t| sent.contains(t.as_str())).count();
-        if m as f32 / claim_tokens.len() as f32 >= 0.5 && has_negation_cue(sent) != claim_neg {
+    for cl in clauses {
+        let (_, r) = clause_overlap(claim_norm, cl);
+        if r >= 0.5 && has_negation_cue(cl) != claim_neg {
             return true;
         }
     }
