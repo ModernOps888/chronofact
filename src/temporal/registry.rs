@@ -256,6 +256,17 @@ impl ModelRegistry {
 
             // ==================== Google Gemini Models ====================
             ModelHorizon {
+                model_id: "gemini-4-argon".to_string(),
+                display_name: "Gemini 4 Argon".to_string(),
+                vendor: "Google DeepMind".to_string(),
+                public_release_date: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
+                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
+                is_frontier: true,
+                status: "Active (Frontier Flagship)".to_string(),
+                notes: "Google DeepMind fourth-generation Argon frontier reasoning and agentic coding model.".to_string(),
+            },
+            ModelHorizon {
                 model_id: "gemini-3-8-flash".to_string(),
                 display_name: "Gemini 3.8 Flash".to_string(),
                 vendor: "Google".to_string(),
@@ -332,7 +343,14 @@ impl ModelRegistry {
             self.models.insert(m.model_id.to_lowercase(), m.clone());
 
             // Register aliases
-            if m.model_id == "gpt-6-astra" {
+            if m.model_id == "gemini-4-argon" {
+                self.models.insert("google/gemini-4-argon".to_string(), m.clone());
+                self.models.insert("gemini-4.0-argon".to_string(), m.clone());
+                self.models.insert("gemini-4".to_string(), m.clone());
+                self.models.insert("gemini4-argon".to_string(), m.clone());
+                self.models.insert("gemini4argon".to_string(), m.clone());
+                self.models.insert("argon".to_string(), m.clone());
+            } else if m.model_id == "gpt-6-astra" {
                 self.models.insert("astra-6".to_string(), m.clone());
                 self.models.insert("astr-6".to_string(), m.clone());
                 self.models.insert("astr6".to_string(), m.clone());
@@ -385,12 +403,13 @@ impl ModelRegistry {
             }
         }
 
-        // 3. Fallback deterministic substring match (prioritize longest matching model key)
+        // 3. Fallback deterministic substring match (prioritize longest matching model key;
+        //    require clean_k.len() >= 4 so 2-char keys like "o1"/"o3" never false-match "nemo12b" or "pro1")
         let mut best_match: Option<&ModelHorizon> = None;
         let mut best_len = 0;
         for (k, v) in &candidates {
             let clean_k: String = k.chars().filter(|c| c.is_alphanumeric()).collect();
-            if clean_key.contains(&clean_k) && clean_k.len() > best_len {
+            if clean_k.len() >= 4 && clean_key.contains(&clean_k) && clean_k.len() > best_len {
                 best_len = clean_k.len();
                 best_match = Some(v);
             }
@@ -493,3 +512,35 @@ impl ModelRegistry {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gemini_4_argon_registration_and_aliases() {
+        let reg = ModelRegistry::new();
+        for alias in &[
+            "gemini-4-argon",
+            "google/gemini-4-argon",
+            "gemini-4.0-argon",
+            "gemini-4",
+            "gemini4-argon",
+            "argon",
+        ] {
+            let h = reg.lookup(alias);
+            assert_eq!(h.model_id, "gemini-4-argon", "failed alias: {}", alias);
+            assert_eq!(h.vendor, "Google DeepMind");
+            assert!(h.is_frontier);
+        }
+    }
+
+    #[test]
+    fn test_short_key_collision_prevention() {
+        let reg = ModelRegistry::new();
+        // Previously, any unregistered model containing 'o' and '1' (like "cohere-v1-command")
+        // matched "o1" via 2-char substring check in Step 3.
+        let fallback = reg.lookup("cohere-v1-command");
+        assert_ne!(fallback.model_id, "o1", "2-char 'o1' must not hijack unrelated model strings");
+        assert_eq!(fallback.vendor, "Unknown/Generic");
+    }
+}

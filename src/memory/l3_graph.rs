@@ -65,9 +65,16 @@ impl SemanticEntityGraph {
 
     pub fn upsert_entity(conn: &Connection, entity: &ProjectEntity) -> Result<()> {
         conn.execute(
-            "INSERT OR REPLACE INTO project_entities 
+            "INSERT INTO project_entities 
              (id, project_id, entity_name, entity_type, definition, version, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 entity_name = excluded.entity_name,
+                 entity_type = excluded.entity_type,
+                 definition = excluded.definition,
+                 version = excluded.version,
+                 updated_at = excluded.updated_at;",
             params![
                 entity.id,
                 entity.project_id,

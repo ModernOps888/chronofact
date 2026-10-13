@@ -338,6 +338,8 @@ impl McpServer {
                         "claude-sonnet-5-5"
                     } else if q_lower.contains("grok 4") || q_lower.contains("grok-4") {
                         "grok-4-7"
+                    } else if q_lower.contains("gemini-4") || q_lower.contains("gemini 4") || q_lower.contains("argon") {
+                        "gemini-4-argon"
                     } else if q_lower.contains("gemini") {
                         "gemini-3-8-flash"
                     } else {
@@ -481,9 +483,10 @@ impl McpServer {
 
                 self.memory.upsert_entity(&entity).map_err(|e| e.to_string())?;
 
-                // Also record an event in L2
+                // Also record an event in L2 scoped to the target project_id
+                let session_key = format!("mcp-session:{}", project_id);
                 let _ = self.memory.record_event(
-                    "mcp-session",
+                    &session_key,
                     "MEMORY_RECORD",
                     &format!("Updated entity '{}' ({})", entity_name, entity_type),
                     Some(definition),
@@ -683,7 +686,8 @@ impl McpServer {
                 let project_id = args.get("project_id").and_then(|v| v.as_str()).unwrap_or("default");
                 let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let content = args.get("content").and_then(|v| v.as_str()).ok_or("Missing 'content'")?;
-                let temporal_anchor = args.get("temporal_anchor").and_then(|v| v.as_str()).unwrap_or("2026-10-07");
+                let default_today = chrono::Utc::now().naive_utc().date().to_string();
+                let temporal_anchor = args.get("temporal_anchor").and_then(|v| v.as_str()).unwrap_or(&default_today);
 
                 let checker = crate::grounding::CodeInvariantChecker::new();
                 let report = checker.audit_code(file_path, content, None);
@@ -877,6 +881,7 @@ impl McpServer {
         if is_read_only {
             self.tool_cache.put(&canonical_tool_name, args, upstream_result.clone());
         } else {
+            self.tool_cache.invalidate_server(&server_name);
             let tool_lower = name.to_lowercase();
             if tool_lower.contains("write")
                 || tool_lower.contains("edit")

@@ -11,6 +11,7 @@ struct CacheEntry {
     ttl: Duration,
     hits: AtomicU64,
     associated_path: Option<String>,
+    associated_server: Option<String>,
 }
 
 impl CacheEntry {
@@ -162,6 +163,27 @@ impl ToolResponseCache {
         }
     }
 
+    /// Invalidates all cached entries belonging to a specific upstream server.
+    pub fn invalidate_server(&self, server_name: &str) {
+        if let Ok(mut entries) = self.entries.write() {
+            let srv_lower = server_name.to_lowercase();
+            let keys_to_remove: Vec<String> = entries
+                .iter()
+                .filter(|(_, entry)| {
+                    entry
+                        .associated_server
+                        .as_ref()
+                        .map(|s| s.to_lowercase() == srv_lower)
+                        .unwrap_or(false)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in keys_to_remove {
+                entries.remove(&k);
+            }
+        }
+    }
+
     pub fn get(&self, tool_name: &str, arguments: &Value) -> Option<Value> {
         let key = Self::compute_key(tool_name, arguments);
 
@@ -182,6 +204,10 @@ impl ToolResponseCache {
     pub fn put(&self, tool_name: &str, arguments: &Value, value: Value) {
         let key = Self::compute_key(tool_name, arguments);
         let associated_path = Self::extract_path(arguments);
+        let associated_server = tool_name
+            .split_once("__")
+            .or_else(|| tool_name.split_once(':'))
+            .map(|(srv, _)| srv.to_string());
 
         if let Ok(mut entries) = self.entries.write() {
             // Evict if at capacity
@@ -215,6 +241,7 @@ impl ToolResponseCache {
                     ttl: self.default_ttl,
                     hits: AtomicU64::new(0),
                     associated_path,
+                    associated_server,
                 },
             );
         }

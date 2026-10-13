@@ -99,8 +99,12 @@ impl EpisodicLedger {
 
     pub fn record_session(conn: &Connection, session: &SessionSummary) -> Result<()> {
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (session_id, project_id, created_at, summary)
-             VALUES (?1, ?2, ?3, ?4);",
+            "INSERT INTO sessions (session_id, project_id, created_at, summary)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 created_at = excluded.created_at,
+                 summary = excluded.summary;",
             params![session.session_id, session.project_id, session.created_at, session.summary],
         )?;
         Ok(())
@@ -114,11 +118,15 @@ impl EpisodicLedger {
         context_diff: Option<&str>,
     ) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
+        let inferred_project = session_id
+            .strip_prefix("mcp-session:")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("antigravity-ide");
         // Auto-create parent session row so that INNER JOIN in get_recent_events_for_project resolves
         conn.execute(
             "INSERT OR IGNORE INTO sessions (session_id, project_id, created_at, summary)
-             VALUES (?1, 'antigravity-ide', ?2, 'Auto-registered session');",
-            params![session_id, now],
+             VALUES (?1, ?2, ?3, 'Auto-registered session');",
+            params![session_id, inferred_project, now],
         )?;
         conn.execute(
             "INSERT INTO session_events (session_id, timestamp, event_type, description, context_diff)

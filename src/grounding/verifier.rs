@@ -111,9 +111,17 @@ impl FactVerifier {
     ) -> (VerificationStatus, f32, Vec<String>, String) {
         let statement_lower = statement.to_lowercase();
 
+        let has_retirement_or_negation = [
+            "retired", "deprecated", "superseded", "outdated", "legacy", "eol",
+            "no longer", "not the latest", "not the newest", "not the current", "is not active", "isn't the latest",
+        ]
+        .iter()
+        .any(|kw| statement_lower.contains(kw));
+
         // Configurable Policy Invariant Rule 1: Retired Claude 3.5 models
         if (statement_lower.contains("3.5 sonnet") || statement_lower.contains("claude 3.5") || statement_lower.contains("sonnet 3.5"))
             && (statement_lower.contains("latest") || statement_lower.contains("current") || statement_lower.contains("newest") || statement_lower.contains("active") || statement_lower.contains("flagship") || statement_lower.contains("available"))
+            && !has_retirement_or_negation
         {
             return (
                 VerificationStatus::Contradicted,
@@ -126,6 +134,7 @@ impl FactVerifier {
         // Configurable Policy Invariant Rule 2: Superseded Grok models
         if (statement_lower.contains("grok 3") || statement_lower.contains("grok-3"))
             && (statement_lower.contains("latest") || statement_lower.contains("newest") || statement_lower.contains("flagship"))
+            && !has_retirement_or_negation
         {
             return (
                 VerificationStatus::Contradicted,
@@ -138,6 +147,7 @@ impl FactVerifier {
         // Configurable Policy Invariant Rule 3: Deprecated Claude 3.7
         if (statement_lower.contains("3.7 sonnet") || statement_lower.contains("claude 3.7") || statement_lower.contains("sonnet 3.7"))
             && (statement_lower.contains("latest") || statement_lower.contains("newest") || statement_lower.contains("current frontier"))
+            && !has_retirement_or_negation
         {
             return (
                 VerificationStatus::Contradicted,
@@ -148,9 +158,17 @@ impl FactVerifier {
         }
 
         // Configurable Policy Invariant Rule 4: Astra 6 & Sol 6.1 Vendor Misattribution
-        if (statement_lower.contains("astra") || statement_lower.contains("sol 6") || statement_lower.contains("astr 6") || statement_lower.contains("sol-6"))
-            && (statement_lower.contains("google") || statement_lower.contains("deepmind") || statement_lower.contains("anthropic") || statement_lower.contains("meta") || statement_lower.contains("xai"))
-        {
+        // Evaluate per comma/semicolon clause so compound sentences ("Astra 6 is OpenAI, Claude Opus 5.5 is Anthropic") do not false-positive.
+        let misattributed_in_clause = statement_lower
+            .split(|c| c == ',' || c == ';')
+            .any(|clause| {
+                let mentions_astra_or_sol = clause.contains("astra") || clause.contains("sol 6") || clause.contains("astr 6") || clause.contains("sol-6");
+                let mentions_wrong_vendor = clause.contains("google") || clause.contains("deepmind") || clause.contains("anthropic") || clause.contains("meta") || clause.contains("xai");
+                let explicitly_openai = clause.contains("openai") || clause.contains("not google") || clause.contains("not anthropic") || clause.contains("not deepmind") || clause.contains("not meta") || clause.contains("not xai");
+                mentions_astra_or_sol && mentions_wrong_vendor && !explicitly_openai
+            });
+
+        if misattributed_in_clause {
             return (
                 VerificationStatus::Contradicted,
                 0.01,
@@ -544,4 +562,40 @@ fn polarity_mismatch_clause(clauses: &[String], claim_norm: &HashSet<String>, cl
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grounding::claim::ClaimCategory;
+
+    #[test]
+    fn test_retirement_statement_not_falsely_flagged_as_contradiction() {
+        let verifier = FactVerifier::new();
+        let claims = vec![AtomicClaim {
+            id: "c1".to_string(),
+            statement: "Claude 3.5 Sonnet is retired and superseded by Claude Opus 5.5 in 2026.".to_string(),
+            category: ClaimCategory::TemporalEvent,
+        }];
+        let report = verifier.verify_claims(&claims, &[]);
+        assert_eq!(
+            report.contradicted_count, 0,
+            "Accurate retirement statement must not trigger a policy contradiction"
+        );
+    }
+
+    #[test]
+    fn test_compound_sentence_vendor_clause_scoping() {
+        let verifier = FactVerifier::new();
+        let claims = vec![AtomicClaim {
+            id: "c2".to_string(),
+            statement: "Astra 6 is an OpenAI frontier model, while Anthropic develops Claude Opus 5.5.".to_string(),
+            category: ClaimCategory::FactualAssertion,
+        }];
+        let report = verifier.verify_claims(&claims, &[]);
+        assert_eq!(
+            report.contradicted_count, 0,
+            "Compound sentence with separate vendor clauses must not false-positive"
+        );
+    }
 }

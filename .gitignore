@@ -1,7 +1,10 @@
 # Rust compilation artifacts
 /target/
+/bin/
 **/*.rs.bk
 *.exe
+*.exe.old
+*.old
 *.pdb
 *.dll
 

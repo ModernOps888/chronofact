@@ -438,16 +438,17 @@ pub async fn call_gateway_tool(
         }
     }
 
-    let (is_read_only, canonical_name) = {
+    let (is_read_only, canonical_name, server_name) = {
         let gw_guard = gw.read().await;
         let ro = gw_guard.get_tool_definition(&payload.name).map(|t| t.is_read_only()).unwrap_or(false);
+        let srv = gw_guard.find_tool_server(&payload.name).unwrap_or_else(|| "default".to_string());
         let canonical = if let Some(server) = gw_guard.find_tool_server(&payload.name) {
             let bare = payload.name.split_once('/').map(|(_, b)| b).unwrap_or(&payload.name);
             format!("{}/{}", server, bare)
         } else {
             payload.name.clone()
         };
-        (ro, canonical)
+        (ro, canonical, srv)
     };
 
     if is_read_only {
@@ -469,7 +470,9 @@ pub async fn call_gateway_tool(
         gw_guard.resolve_tool_execution(&payload.name, Some(args_val.clone()))
             .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?
     };
-    let result = target.execute().await
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), target.execute())
+        .await
+        .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, format!("Upstream tool '{}' timed out after 10s", payload.name)))?
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let should_verify = payload.verify_output.unwrap_or(true);
@@ -486,6 +489,8 @@ pub async fn call_gateway_tool(
 
     if is_read_only {
         state.tool_cache.put(&canonical_name, &args_val, result.clone());
+    } else {
+        state.tool_cache.invalidate_server(&server_name);
     }
 
     if is_passthrough {

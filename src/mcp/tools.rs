@@ -11,7 +11,7 @@ pub fn list_tools() -> Value {
                     "properties": {
                         "model_id": {
                             "type": "string",
-                            "description": "Target model identifier (e.g. 'claude-opus-5-5', 'claude-3-7-sonnet', 'gemini-3-8-flash', 'gpt-4o')"
+                            "description": "Target model identifier (e.g. 'gemini-4-argon', 'claude-opus-5-5', 'gemini-3-8-flash', 'gpt-6-astra', 'gpt-6-1-sol')"
                         },
                         "query": {
                             "type": "string",
