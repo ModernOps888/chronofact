@@ -2,7 +2,7 @@
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 73/73 Passed](https://img.shields.io/badge/ci%20tests-73%2F73%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 100/100 Passed](https://img.shields.io/badge/ci%20tests-100%2F100%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 [![Enterprise-Audits](https://img.shields.io/badge/Enterprise-Security_Audits-ff00e5.svg)](https://infinitytechstack.uk/consulting)
@@ -58,7 +58,7 @@ Large Language Models deployed in agentic environments suffer from four critical
 ### 🕒 Pillar 1: Dynamic Temporal Horizon Calibration
 * **Pre-Release Freeze Margin Tracking**:
   - LLMs have an **official knowledge cutoff** and an **actual weight freeze date** (typically 3-6 months earlier).
-  - *Configurable Policy Templates*: OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-08-01`), Sol 6.1 (Freeze: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`).
+  - *Configurable Policy Templates*: Google DeepMind **Gemini 4 Argon** (`gemini-4-argon` / `google/gemini-4-argon`, Release: `2026-10-01`, Freeze: `2026-07-15`, Cutoff: `2026-08-01`), Gemini 3.8 Pro/Flash, OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-08-01`), Sol 6.1 (Freeze: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), xAI Grok 4.7, Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`).
   - *Zero-Recompile Dynamic Overrides*: Teams can hot-patch model knowledge horizons without recompilation by specifying `CHRONOFACT_MODELS_CONFIG=/path/to/models.json` or inline `CHRONOFACT_MODELS_JSON='{...}'`.
 * **Rust `TemporalScanner`**:
   - Automatically identifies temporal references, semantic year markers, library major versions, and fast-moving entities.
@@ -261,9 +261,10 @@ While semantic intent boosting (+0.35) rescues idiomatic engineering commands wi
 * **Discriminator**: `is_conceptual_or_abstract_query(query)` parses queries for conceptual framing while preserving operational overrides on failure indicators (`"error code"`, `"failing"`, `"error[e"`, `"panicked"`).
 * **Token Economy**: On conceptual queries, operational intent boosts and forced `ALWAYS_RETAINED` whitelists are suppressed, maximizing token savings.
 
-### 6. SQLite WAL High-Concurrency Backoff Engine (Pillar 2)
-To guarantee zero lock starvation under burst multi-tenant agent transactions:
-* Configured SQLite PRAGMAs: `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`, `cache_size=-64000`, `temp_store=MEMORY`, and `wal_autocheckpoint=1000`.
+### 6. SQLite WAL High-Concurrency Backoff & Foreign-Key-Safe Upserts (Pillar 2 & 3)
+To guarantee zero lock starvation and referential integrity under burst multi-tenant agent transactions:
+* Configured SQLite PRAGMAs: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`, `cache_size=-64000`, `temp_store=MEMORY`, and `wal_autocheckpoint=1000`.
+* Uses non-destructive `INSERT INTO ... ON CONFLICT(...) DO UPDATE SET` upserts across `project_entities` (L3) and `sessions` (L2) to preserve child foreign-key rows (`entity_relations`, `session_events`), with per-project session namespace isolation (`mcp-session:<project_id>`).
 * Wrapped all database read/write transactions in `with_busy_retry` with exponential backoff and jitter (20ms, 40ms, 80ms, 160ms, 320ms, 640ms) handling transient `SQLITE_BUSY` and `SQLITE_LOCKED` states.
 
 ---
@@ -272,7 +273,9 @@ To guarantee zero lock starvation under burst multi-tenant agent transactions:
 
 | Metric / Benchmark | Result | Verification Proof |
 |:---|:---:|:---|
-| **Rust Unit & Integration Tests** | **73 / 73 PASSING** | `cargo test` (10 test suites, 0 warnings, 0 failures) |
+| **Rust Unit & Integration Tests** | **100 / 100 PASSING** | `cargo test` (13 test suites, 0 warnings, 0 failures) |
+| **Gemini 4 Argon (`gemini-4-argon`) Horizon & Aliases** | **100% Verified** | Verified in `test_gemini_4_argon_registration_and_aliases` |
+| **Clause-Scoped Policy & Retirement Verification** | **0 False Positives** | Verified in `test_compound_sentence_vendor_clause_scoping` & `test_retirement_statement_not_falsely_flagged_as_contradiction` |
 | **Adversarial Prompt Stress Suite** | **12 / 12 PASSING** | `scripts/test_prompts_live.ps1` & `tests/adversarial_prompt_stress.rs` |
 | **CI Automation** | **GitHub Actions** | Automated build & test on push/PR (`.github/workflows/ci.yml`) |
 | **Gateway Multiplexing Throughput** | **1,333,333 ops/sec** | P50: 300ns (Verified in `stress_test_scenario_1`) |
@@ -280,7 +283,7 @@ To guarantee zero lock starvation under burst multi-tenant agent transactions:
 | **TF-IDF Schema Pruning Ratio (15 Tools)** | **86.7% Token Reduction** | 13 tools pruned, 2 retained on targeted queries |
 | **Adversarial Security Interception** | **100.0% Blocked** | 1,000 / 1,000 prompt injection vectors blocked (0.75 µs/check) |
 | **Claim Verification Latency** | **0.13 ms / claim set** | 7,425 claim sets/sec throughput (sub-millisecond execution) |
-| **Tool Response Cache Hit Latency** | **16.14 µs** | 61,952 ops/sec in-memory SHA-256 lookup |
+| **Tool Response Cache Hit Latency** | **16.14 µs** | 61,952 ops/sec in-memory SHA-256 lookup + per-server invalidation |
 | **Prompt Cache Invariant Alignment** | **100% Byte-Stable Prefix** | Verified in `test_cache_isolated_prompt_prefix_stability` |
 | **Prompt Cache Floor Guarantee** | **>= 1,024 Tokens** | Verified in `test_cache_isolated_prompt_prefix_floor_guarantee` |
 | **Multi-Tenant SQLite Burst Concurrency** | **100% Success (0 Busy Errs)** | Verified in `test_sqlite_with_busy_retry_concurrency` |
