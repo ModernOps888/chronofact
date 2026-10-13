@@ -92,7 +92,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects direct string concatenation or formatting inside SQL queries, risking SQL injection.".to_string(),
-                pattern: r#"(?i)(?:format!\s*\(\s*["'].*(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER).*\{|\b(?:SELECT|INSERT|UPDATE|DELETE)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
+                pattern: r#"(?i)(?:format!\s*\(\s*["'][^"']*\b(?:SELECT\s+[^"']*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b[^"']*\{|\b(?:SELECT\s+.*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
                 remediation: "Use parameterized queries ($1, ?), prepared statements, or an approved query builder/ORM.".to_string(),
             },
             InvariantRule {
