@@ -2,7 +2,7 @@
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 100/100 Passed](https://img.shields.io/badge/ci%20tests-100%2F100%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 104/104 Passed](https://img.shields.io/badge/ci%20tests-104%2F104%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 [![Enterprise-Audits](https://img.shields.io/badge/Enterprise-Security_Audits-ff00e5.svg)](https://infinitytechstack.uk/consulting)
