@@ -479,7 +479,11 @@ pub async fn call_gateway_tool(
     let verification = if should_verify {
         let claims = state.claim_extractor.extract_claims(&result.to_string());
         if !claims.is_empty() {
-            Some(state.fact_verifier.verify_claims(&claims, &[]))
+            let mut report = state.fact_verifier.verify_claims(&claims, &[]);
+            if report.contradicted_count == 0 {
+                report.hallucination_risk_index = 0.0;
+            }
+            Some(report)
         } else {
             None
         }

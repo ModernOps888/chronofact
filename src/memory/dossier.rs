@@ -133,7 +133,7 @@ impl DossierCompiler {
             }
         }
 
-        md.push_str(&format!("\n<!-- ChronoFact Memory Snapshot: {} -->\n</chronofact_project_truth_dossier>\n", now));
+        md.push_str("\n<!-- ChronoFact Memory Snapshot: deterministic-kv-prefix -->\n</chronofact_project_truth_dossier>\n");
 
         Ok(ProjectDossier {
             project_id: project_id.to_string(),

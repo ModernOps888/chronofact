@@ -101,3 +101,82 @@ fn test_dynamic_rust_python_detection() {
     assert!(astra_google.outdated_models_flagged[0].contains("OpenAI models (launched Sep 2026), NOT Google DeepMind"));
 }
 
+#[test]
+fn test_dossier_kv_cache_prefix_determinism() {
+    use chronofact::cost::CostTracker;
+    use chronofact::memory::{MemoryEngine, ProjectEntity};
+
+    let mem = MemoryEngine::new_in_memory().unwrap();
+    mem.upsert_entity(&ProjectEntity {
+        id: "proj:axum".to_string(),
+        project_id: "proj".to_string(),
+        entity_name: "Axum".to_string(),
+        entity_type: "TECH_STACK".to_string(),
+        definition: "Axum 0.8 HTTP router".to_string(),
+        version: "0.8.1".to_string(),
+        updated_at: "2026-10-14T00:00:00Z".to_string(),
+    })
+    .unwrap();
+
+    let d1 = mem.get_dossier("proj").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let d2 = mem.get_dossier("proj").unwrap();
+
+    // Dossier markdown must be byte-identical across turns so KV prompt cache prefixes never bust
+    assert_eq!(d1.dossier_markdown, d2.dossier_markdown);
+
+    let p1 = CostTracker::build_cache_isolated_prompt("proj", &d1.dossier_markdown, "", "anchor1", "", "q1");
+    let p2 = CostTracker::build_cache_isolated_prompt("proj", &d2.dossier_markdown, "", "anchor2", "", "q2");
+    assert_eq!(p1.static_cache_prefix, p2.static_cache_prefix);
+}
+
+#[test]
+fn test_claim_extractor_skips_fenced_code_and_extracts_blocks() {
+    use chronofact::grounding::{ClaimExtractor, CodeInvariantChecker};
+
+    let extractor = ClaimExtractor::new();
+    let response = "Claude Sonnet 5.5 is the active 2026 Anthropic frontier model. For example, e.g. Node.js 22 supports native fetch.\n```typescript\nconst model = \"claude-3-5-sonnet-20241022\";\nconst sql = `SELECT * FROM users WHERE id = ${userId}`;\n```\nGPT-6 Astra is developed by OpenAI.";
+
+    let claims = extractor.extract_claims(response);
+    // Code lines inside ```typescript ... ``` must NOT be extracted as prose claims
+    assert!(claims.iter().all(|c| !c.statement.contains("SELECT * FROM users")));
+    assert!(claims.iter().any(|c| c.statement.contains("Node.js 22 supports native fetch")));
+
+    // Fenced code blocks are extracted cleanly and audited by CodeInvariantChecker
+    let blocks = extractor.extract_fenced_code_blocks(response);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].0, "typescript");
+
+    let checker = CodeInvariantChecker::new();
+    let audit = checker.audit_code("snippet.ts", &blocks[0].1, None);
+    assert!(audit.violations.iter().any(|v| v.rule_id == "INV-TEMP-DEPRECATED-LIB"));
+    assert!(audit.violations.iter().any(|v| v.rule_id == "INV-SEC-RAW-SQL"));
+}
+
+#[test]
+fn test_mcplex_enhanced_router_camelcase_stems_and_spine_duo() {
+    use chronofact::cost::{TfidfToolRouter, ToolCandidate};
+
+    let router = TfidfToolRouter::default();
+    let tools = vec![
+        ToolCandidate::new("createPullRequestReview", "Submit a review on a pull request", "github", vec!["pullNumber".into(), "body".into()]),
+        ToolCandidate::new("postgres_run_migration", "Run database schema migration on postgres", "db", vec!["sql".into()]),
+        ToolCandidate::new("spine_adversarial_redteam", "Lumbar/Sacral adversarial architecture red-team", "spine", vec!["proposal".into()]),
+        ToolCandidate::new("spine_verify_pushback", "Thoracic T1 pushback verification", "spine", vec!["challenge_prompt".into()]),
+        ToolCandidate::new("weather_forecast", "Get weather forecast for city", "weather", vec!["city".into()]),
+    ];
+
+    // 1. camelCase splitting ("createPullRequestReview" matches "pull request review")
+    let res1 = router.route("submit a pull request review on github", &tools, 2, None);
+    assert_eq!(res1.selected_tools[0].tool.name, "createPullRequestReview");
+
+    // 2. Morphological stem matching ("postgresql migrations" matches "postgres_run_migration")
+    let res2 = router.route("apply postgresql migrations", &tools, 2, None);
+    assert_eq!(res2.selected_tools[0].tool.name, "postgres_run_migration");
+
+    // 3. SPINE duo intent routing ("redteam" -> spine_adversarial_redteam)
+    let res3 = router.route("redteam this microservice architecture", &tools, 2, None);
+    assert!(res3.selected_tools.iter().any(|s| s.tool.name == "spine_adversarial_redteam"));
+}
+
+

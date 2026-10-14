@@ -83,10 +83,14 @@ impl TfidfToolRouter {
             ("commit", vec!["run_command", "git_commit"]),
             ("push", vec!["run_command"]),
             ("diff", vec!["run_command", "read_file", "view_file"]),
-            ("architecture", vec!["chronofact_verify_code_invariants", "spine_reality_audit", "chronofact_memory_save"]),
-            ("invariant", vec!["chronofact_verify_code_invariants", "spine_reality_audit"]),
-            ("security", vec!["chronofact_verify_code_invariants", "spine_reality_audit"]),
-            ("audit", vec!["chronofact_verify_code_invariants", "spine_reality_audit"]),
+            ("architecture", vec!["chronofact_verify_code_invariants", "spine_reality_audit", "spine_adversarial_redteam", "chronofact_memory_save"]),
+            ("invariant", vec!["chronofact_verify_code_invariants", "spine_reality_audit", "chronofact_attestation_generate"]),
+            ("security", vec!["chronofact_verify_code_invariants", "spine_reality_audit", "spine_adversarial_redteam"]),
+            ("audit", vec!["chronofact_verify_code_invariants", "spine_reality_audit", "spine_adversarial_redteam"]),
+            ("redteam", vec!["spine_adversarial_redteam", "spine_reality_audit"]),
+            ("pushback", vec!["spine_verify_pushback", "chronofact_verify_claims"]),
+            ("sycophancy", vec!["spine_reality_audit", "spine_verify_pushback"]),
+            ("attestation", vec!["chronofact_attestation_generate", "spine_generate_gate_attestation"]),
             ("temporal", vec!["chronofact_temporal_check"]),
             ("cutoff", vec!["chronofact_temporal_check"]),
             ("freeze", vec!["chronofact_temporal_check"]),
@@ -95,6 +99,8 @@ impl TfidfToolRouter {
             ("docs", vec!["search_web", "read_url_content", "chronofact_ground_query"]),
             ("documentation", vec!["search_web", "read_url_content", "chronofact_ground_query"]),
             ("ground", vec!["chronofact_ground_query"]),
+            ("verify", vec!["chronofact_verify_claims", "chronofact_verify_code_invariants", "spine_verify_pushback"]),
+            ("fact", vec!["chronofact_verify_claims", "chronofact_ground_query", "chronofact_temporal_check"]),
         ];
 
         for (intent, target_tools) in mappings {
@@ -221,15 +227,33 @@ impl TfidfToolRouter {
             })
             .collect();
 
-        // Score tools with hybrid TF-IDF + Semantic Intent Boost
+        let avg_doc_len = if doc_tokens.is_empty() {
+            1.0
+        } else {
+            (doc_tokens.iter().map(|d| d.len()).sum::<usize>() as f32 / total_docs).max(1.0)
+        };
+        let query_lower = query.to_lowercase();
+
+        // Score tools with hybrid TF-IDF + BM25 length normalization + Server Boost + Semantic Intent Boost
         let mut scored: Vec<(usize, f32)> = doc_tokens
             .iter()
             .enumerate()
             .map(|(i, tokens)| {
-                let mut score = tfidf_cosine_similarity(&query_tokens, tokens, &idf);
-                let tool_name = &tools[i].name;
+                let raw_sim = tfidf_cosine_similarity(&query_tokens, tokens, &idf);
+                // BM25-style length normalization (BM25_B = 0.3, adopted from MCPlex)
+                let doc_len = tokens.len().max(1) as f32;
+                let len_norm = 1.0 - 0.3 + 0.3 * (doc_len / avg_doc_len);
+                let mut score = raw_sim / len_norm.sqrt();
+
+                let tool = &tools[i];
+                // Server-name boost (1.3x, adopted from MCPlex) when query mentions server name
+                let srv_lower = tool.server_name.to_lowercase();
+                if srv_lower.len() >= 3 && query_lower.contains(&srv_lower) {
+                    score = (score * 1.3).min(1.0);
+                }
+
                 // If semantic intent matched, boost relevance score
-                if intent_matched_tools.contains(tool_name) {
+                if intent_matched_tools.contains(&tool.name) {
                     score = (score + 0.35).min(1.0);
                 }
                 (i, score)
@@ -398,6 +422,25 @@ impl TfidfToolRouter {
     }
 }
 
+/// Splits camelCase, PascalCase, snake_case, and kebab-case identifiers into constituent words
+/// while retaining the original tokens so `"createIssue"` indexes both `"create"`, `"issue"`, and `"createissue"`.
+fn expand_identifiers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 32);
+    let chars: Vec<char> = text.chars().collect();
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if i > 0 && c.is_uppercase() {
+            let prev = chars[i - 1];
+            let next_is_lower = chars.get(i + 1).map(|n| n.is_lowercase()).unwrap_or(false);
+            if prev.is_lowercase() || prev.is_ascii_digit() || (prev.is_uppercase() && next_is_lower) {
+                out.push(' ');
+            }
+        }
+        out.push(c);
+    }
+    format!("{} {}", text, out)
+}
+
 fn tokenize(text: &str) -> Vec<String> {
     const STOPWORDS: &[&str] = &[
         "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
@@ -410,11 +453,27 @@ fn tokenize(text: &str) -> Vec<String> {
         "those", "it", "its", "please", "me", "my", "we", "our", "you", "your",
     ];
 
-    text.to_lowercase()
+    let expanded = expand_identifiers(text);
+    let base_tokens: Vec<String> = expanded
+        .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| s.len() > 1 && !STOPWORDS.contains(s))
         .map(|s| s.to_string())
-        .collect()
+        .collect();
+
+    let mut result = Vec::with_capacity(base_tokens.len() * 2);
+    let mut seen_stems = HashSet::new();
+    for tok in base_tokens {
+        // Add a 5-char subword stem for morphological variants (e.g., postgres/postgresql, repo/repository, migrate/migration)
+        if tok.chars().count() >= 6 && tok.is_ascii() {
+            let stem = format!("#{}", &tok[..5]);
+            if seen_stems.insert(stem.clone()) {
+                result.push(stem);
+            }
+        }
+        result.push(tok);
+    }
+    result
 }
 
 fn term_freq(tokens: &[String]) -> HashMap<String, f32> {

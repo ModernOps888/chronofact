@@ -74,7 +74,7 @@ pub struct CodeAuditReport {
 }
 
 pub struct CodeInvariantChecker {
-    built_in_rules: Vec<InvariantRule>,
+    built_in_rules: Vec<(InvariantRule, Regex)>,
 }
 
 impl Default for CodeInvariantChecker {
@@ -124,12 +124,12 @@ impl CodeInvariantChecker {
             },
             InvariantRule {
                 id: "INV-TEMP-DEPRECATED-LIB".to_string(),
-                name: "Deprecated / EOL Dependency Import".to_string(),
+                name: "Deprecated / EOL Dependency or Retired Model Identifier".to_string(),
                 category: "TemporalDeprecation".to_string(),
                 severity: InvariantSeverity::High,
-                description: "Detects imports of libraries sunsetted or replaced by modern 2026 enterprise standards.".to_string(),
-                pattern: r#"(?:from\s*["'](?:moment|request|urllib3)["']|require\(["'](?:moment|request)["']\))"#.to_string(),
-                remediation: "Replace with current standards: moment -> date-fns/Luxon; request -> fetch/axios/reqwest.".to_string(),
+                description: "Detects imports of sunsetted libraries or hardcoded retired/EOL AI model IDs replaced by 2026 enterprise standards.".to_string(),
+                pattern: r#"(?:from\s*["'](?:moment|request|urllib3)["']|require\(["'](?:moment|request)["']\)|(?i)["'](?:claude-3-5-(?:sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-(?:opus|sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-7-sonnet(?:-\d{8}|-latest)?|gpt-4-(?:0613|0314|turbo-preview|1106-preview)|text-davinci-00[23])["'])"#.to_string(),
+                remediation: "Replace with current 2026 standards: moment -> date-fns/Luxon; request -> fetch/axios/reqwest; retired model IDs -> claude-sonnet-5-5 / claude-opus-5-5 / gpt-6-astra / gemini-4-argon.".to_string(),
             },
             InvariantRule {
                 id: "INV-SEC-SSRF-UNCHECKED".to_string(),
@@ -151,9 +151,12 @@ impl CodeInvariantChecker {
             },
         ];
 
-        Self {
-            built_in_rules: rules,
-        }
+        let built_in_rules = rules
+            .into_iter()
+            .filter_map(|r| Regex::new(&r.pattern).ok().map(|re| (r, re)))
+            .collect();
+
+        Self { built_in_rules }
     }
 
     /// Audits code content and returns a structured CodeAuditReport.
@@ -167,19 +170,16 @@ impl CodeInvariantChecker {
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
 
-        let mut all_rules = self.built_in_rules.clone();
+        let mut compiled_custom: Vec<(InvariantRule, Regex)> = Vec::new();
         if let Some(custom) = custom_rules {
-            all_rules.extend_from_slice(custom);
-        }
-
-        let mut compiled_rules = Vec::new();
-        for r in &all_rules {
-            if let Ok(re) = Regex::new(&r.pattern) {
-                compiled_rules.push((r, re));
+            for r in custom {
+                if let Ok(re) = Regex::new(&r.pattern) {
+                    compiled_custom.push((r.clone(), re));
+                }
             }
         }
 
-        let total_rules = compiled_rules.len();
+        let total_rules = self.built_in_rules.len() + compiled_custom.len();
         let mut violations = Vec::new();
 
         // Special check: Architecture DAL leak only triggers on client/frontend/ui paths
@@ -204,7 +204,7 @@ impl CodeInvariantChecker {
                 continue;
             }
 
-            for (rule, regex) in &compiled_rules {
+            for (rule, regex) in self.built_in_rules.iter().chain(compiled_custom.iter()) {
                 if rule.id == "INV-ARCH-DAL-LEAK" && !is_frontend_path {
                     continue; // Skip DAL leak check on backend files
                 }

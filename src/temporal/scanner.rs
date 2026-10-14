@@ -105,7 +105,7 @@ impl TemporalScanner {
             } else if matched_str.contains("grok") && (matched_str.contains('3') || matched_str.contains('2') || matched_str.contains('1')) {
                 format!("'{}' is SUPERSEDED by Grok 4 and Grok 4.7 (Sep 2026).", mat.as_str())
             } else if matched_str.contains("gpt-4") || matched_str.contains("gpt 4") || matched_str.contains("gpt4") {
-                format!("'{}' is legacy generation. Current frontier is GPT-5 and o3.", mat.as_str())
+                format!("'{}' is legacy generation. Current OpenAI frontier is GPT-6 Astra, GPT-6.1 Sol, GPT-5, and o3.", mat.as_str())
             } else {
                 format!("'{}' is a legacy/superseded model version.", mat.as_str())
             };

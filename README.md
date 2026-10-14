@@ -58,7 +58,7 @@ Large Language Models deployed in agentic environments suffer from four critical
 ### 🕒 Pillar 1: Dynamic Temporal Horizon Calibration
 * **Pre-Release Freeze Margin Tracking**:
   - LLMs have an **official knowledge cutoff** and an **actual weight freeze date** (typically 3-6 months earlier).
-  - *Configurable Policy Templates*: Google DeepMind **Gemini 4 Argon** (`gemini-4-argon` / `google/gemini-4-argon`, Release: `2026-10-01`, Freeze: `2026-07-15`, Cutoff: `2026-08-01`), Gemini 3.8 Pro/Flash, OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-08-01`), Sol 6.1 (Freeze: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), xAI Grok 4.7, Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`).
+  - *Configurable Policy Templates*: Google DeepMind **Gemini 4 Argon** (`gemini-4-argon` / `google/gemini-4-argon`, Release: `2026-10-01`, Freeze: `2026-07-15`, Cutoff: `2026-08-01`), Gemini 3.8 Pro/Flash, OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-04-01`), Sol 6.1 (Freeze: `2026-03-15`, Cutoff: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), xAI Grok 4.7, Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`).
   - *Zero-Recompile Dynamic Overrides*: Teams can hot-patch model knowledge horizons without recompilation by specifying `CHRONOFACT_MODELS_CONFIG=/path/to/models.json` or inline `CHRONOFACT_MODELS_JSON='{...}'`.
 * **Rust `TemporalScanner`**:
   - Automatically identifies temporal references, semantic year markers, library major versions, and fast-moving entities.
@@ -76,9 +76,9 @@ Large Language Models deployed in agentic environments suffer from four critical
     2. `INV-SEC-EVAL-EXEC`: Dynamic code execution / dangerous HTML injection (Critical - Blocks CI).
     3. `INV-SEC-HARDCODED-SECRET`: Raw bearer tokens, private keys, API secrets (Critical - Blocks CI).
     4. `INV-ARCH-DAL-LEAK`: Presentation/Controller layers directly invoking raw database connections (High).
-    5. `INV-DEP-OUTDATED-LIB`: Outdated or unmaintained dependencies (Medium).
-    6. `INV-SEC-SSRF-UNVALIDATED`: Unvalidated external URL dispatch (High).
-    7. `INV-REL-UNHANDLED-ERR`: Silent error swallowing / empty catch blocks (High).
+    5. `INV-TEMP-DEPRECATED-LIB`: Deprecated/EOL dependencies or hardcoded retired AI model identifiers (High).
+    6. `INV-SEC-SSRF-UNCHECKED`: Unvalidated external URL dispatch (Medium).
+    7. `INV-ERR-SILENT-FAIL`: Silent error swallowing / empty catch blocks (Medium).
 * **Cryptographic Attestation Engine (`AttestationEngine`)**:
   - Generates verifiable SHA-256 HMAC attestation tokens binding target file, content hash, temporal anchor, evaluated rules, and pass/block verdict for automated CI/CD pipeline gating.
 * **Cryptographic Source Provenance**:

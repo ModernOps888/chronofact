@@ -41,7 +41,7 @@ impl HorizonCalculator {
         } else if model.model_id.contains("grok-3") || model.model_id.contains("grok-2") {
             Some("Grok 4.7 (xAI September 2026)".to_string())
         } else if model.model_id.contains("gpt-4") {
-            Some("GPT-5 / OpenAI o3".to_string())
+            Some("GPT-6 Astra / GPT-6.1 Sol / GPT-5 / OpenAI o3".to_string())
         } else {
             None
         };

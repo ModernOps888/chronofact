@@ -554,8 +554,12 @@ impl GatewayMultiplexer {
                 let mut params = Vec::new();
                 if let Some(ref schema) = tool.definition.input_schema {
                     if let Some(props) = schema.get("properties").and_then(|p| p.as_object()) {
-                        for key in props.keys() {
-                            params.push(key.clone());
+                        for (key, prop_val) in props {
+                            if let Some(desc) = prop_val.get("description").and_then(|d| d.as_str()) {
+                                params.push(format!("{} {}", key, desc));
+                            } else {
+                                params.push(key.clone());
+                            }
                         }
                     }
                 }

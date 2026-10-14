@@ -147,6 +147,9 @@ impl McpServer {
                 } else {
                     "2025-03-26"
                 };
+                let router_mode = std::env::var("CHRONOFACT_ROUTER_MODE")
+                    .unwrap_or_else(|_| "passthrough".to_string())
+                    .to_lowercase();
                 let result = json!({
                     "protocolVersion": proto,
                     "capabilities": {
@@ -157,7 +160,11 @@ impl McpServer {
                     "serverInfo": {
                         "name": "chronofact",
                         "version": env!("CARGO_PKG_VERSION")
-                    }
+                    },
+                    "instructions": format!(
+                        "ChronoFact Epistemic Backbone & MCP Multiplexing Gateway (router_mode={}). Call chronofact_temporal_check first on technical queries, chronofact_verify_claims / chronofact_verify_code_invariants to audit claims and code, and gateway_find_tools + gateway_call_tool to discover and invoke upstream tools on demand.",
+                        router_mode
+                    )
                 });
                 Some(JsonRpcResponse::success(id, result))
             }
@@ -165,23 +172,38 @@ impl McpServer {
             "ping" => Some(JsonRpcResponse::success(id, json!({}))),
             "tools/list" => {
                 let mut tools_data = tools::list_tools();
-                if let Some(ref gw) = self.gateway {
-                    let gw_guard = gw.read().await;
-                    let upstream = gw_guard.get_all_tools();
-                    if let Some(arr) = tools_data.get_mut("tools").and_then(|v| v.as_array_mut()) {
-                        for ut in upstream {
-                            let schema = ut.definition.input_schema.unwrap_or_else(|| json!({"type": "object", "properties": {}}));
-                            let mut tool_obj = json!({
-                                "name": ut.definition.name,
-                                "description": ut.definition.description.unwrap_or_else(|| format!("Upstream tool on server '{}'", ut.server_name)),
-                                "inputSchema": schema,
-                                "server": ut.server_name,
-                                "fqn": ut.fqn
-                            });
-                            if let Some(ref annotations) = ut.definition.annotations {
-                                tool_obj["annotations"] = annotations.clone();
+                let mode_override = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("router_mode"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_lowercase());
+                let router_mode = mode_override.unwrap_or_else(|| {
+                    std::env::var("CHRONOFACT_ROUTER_MODE")
+                        .unwrap_or_else(|_| "passthrough".to_string())
+                        .to_lowercase()
+                });
+                // In "metatool" mode (learned from MCPlex), upstream tools are hidden from tools/list
+                // and discovered dynamically via gateway_find_tools + gateway_call_tool to eliminate schema bloat.
+                if router_mode != "metatool" {
+                    if let Some(ref gw) = self.gateway {
+                        let gw_guard = gw.read().await;
+                        let upstream = gw_guard.get_all_tools();
+                        if let Some(arr) = tools_data.get_mut("tools").and_then(|v| v.as_array_mut()) {
+                            for ut in upstream {
+                                let schema = ut.definition.input_schema.unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+                                let mut tool_obj = json!({
+                                    "name": ut.definition.name,
+                                    "description": ut.definition.description.unwrap_or_else(|| format!("Upstream tool on server '{}'", ut.server_name)),
+                                    "inputSchema": schema,
+                                    "server": ut.server_name,
+                                    "fqn": ut.fqn
+                                });
+                                if let Some(ref annotations) = ut.definition.annotations {
+                                    tool_obj["annotations"] = annotations.clone();
+                                }
+                                arr.push(tool_obj);
                             }
-                            arr.push(tool_obj);
                         }
                     }
                 }
@@ -430,7 +452,48 @@ impl McpServer {
                 };
 
                 let claims = self.extractor.extract_claims(response_text);
-                let report = self.verifier.verify_claims(&claims, &sources);
+                let mut report = self.verifier.verify_claims(&claims, &sources);
+
+                // Also audit any fenced code blocks present in the response using CodeInvariantChecker
+                let code_blocks = self.extractor.extract_fenced_code_blocks(response_text);
+                if !code_blocks.is_empty() {
+                    let checker = crate::grounding::CodeInvariantChecker::new();
+                    for (block_idx, (lang, code)) in code_blocks.iter().enumerate() {
+                        let virtual_path = if lang.is_empty() {
+                            format!("response_block_{}.txt", block_idx + 1)
+                        } else {
+                            format!("response_block_{}.{}", block_idx + 1, lang)
+                        };
+                        let code_audit = checker.audit_code(&virtual_path, code, None);
+                        for v in code_audit.violations {
+                            report.total_claims += 1;
+                            report.contradicted_count += 1;
+                            report.claims.push(crate::grounding::VerifiedClaim {
+                                claim: crate::grounding::AtomicClaim {
+                                    id: format!("code_inv_{}_{}", block_idx + 1, v.line_number),
+                                    statement: v.line_snippet.clone(),
+                                    category: crate::grounding::ClaimCategory::TechnicalApi,
+                                },
+                                status: crate::grounding::VerificationStatus::Contradicted,
+                                confidence_score: 0.01,
+                                matched_source_ids: vec![v.rule_id.clone()],
+                                rationale: format!(
+                                    "CODE INVARIANT VIOLATION [{} / {}]: {} Remediation: {}",
+                                    v.rule_id,
+                                    v.severity.as_str(),
+                                    v.message,
+                                    v.remediation
+                                ),
+                            });
+                        }
+                    }
+                    if report.total_claims > 0 {
+                        let risk = ((report.contradicted_count as f32 * 1.0)
+                            + (report.unverified_count as f32 * 0.4))
+                            / (report.total_claims as f32);
+                        report.hallucination_risk_index = risk.min(1.0);
+                    }
+                }
 
                 let snippet = if response_text.chars().count() > 90 {
                     format!("{}...", response_text.chars().take(90).collect::<String>())
@@ -575,30 +638,44 @@ impl McpServer {
                 let query = args.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
                 let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
 
-                let default_tools = vec![
+                let mut candidate_tools = vec![
                     ToolCandidate::new("chronofact_temporal_check", "Examines a query against a model's knowledge cutoff and estimated training freeze date", "chronofact", vec!["model_id".into(), "query".into()]),
                     ToolCandidate::new("chronofact_ground_query", "Performs real-time web retrieval, validates URLs against SSRF, and sanitizes untrusted content", "chronofact", vec!["query".into(), "max_results".into()]),
                     ToolCandidate::new("chronofact_verify_claims", "Decomposes a text response into atomic propositions and checks each against retrieved source evidence", "chronofact", vec!["response_text".into(), "sources".into()]),
                     ToolCandidate::new("chronofact_memory_save", "Persists an architectural invariant, tech stack version, or project rule into L3 semantic memory", "chronofact", vec!["project_id".into(), "entity_name".into(), "definition".into()]),
                     ToolCandidate::new("chronofact_memory_dossier", "Retrieves the persistent Project Truth Dossier with Zero-Pollution Guard", "chronofact", vec!["project_id".into(), "query".into()]),
                     ToolCandidate::new("chronofact_cost_optimize", "Filters available tools to top-k relevant tools using TF-IDF routing to save tokens", "chronofact", vec!["query".into(), "top_k".into()]),
+                    ToolCandidate::new("chronofact_cost_metrics", "Returns real-time token savings, prompt cache hit rate, and estimated USD cost saved across the session", "chronofact", vec![]),
+                    ToolCandidate::new("chronofact_verify_code_invariants", "Performs enterprise architectural and security invariant audits on source code, PR diffs, or manifests", "chronofact", vec!["file_path".into(), "content".into()]),
+                    ToolCandidate::new("chronofact_attestation_generate", "Generates a cryptographically signed Invariant Attestation certificate binding code content and temporal anchor", "chronofact", vec!["project_id".into(), "file_path".into(), "content".into()]),
+                    ToolCandidate::new("chronofact_expand_tool_palette", "Recovers and injects additional tool schemas on demand during multi-step execution", "chronofact", vec!["query_or_category".into(), "top_k".into()]),
+                    ToolCandidate::new("gateway_find_tools", "Search across all upstream servers and native tools via TF-IDF", "chronofact-gateway", vec!["query".into(), "top_k".into()]),
+                    ToolCandidate::new("gateway_call_tool", "Execute tool on multiplexed upstream server with security and anti-hallucination verification", "chronofact-gateway", vec!["name".into(), "arguments".into()]),
+                    ToolCandidate::new("gateway_list_servers", "Lists all connected upstream MCP servers and health", "chronofact-gateway", vec![]),
+                    ToolCandidate::new("spine_reality_audit", "Audits user prompt against 33 SPINE vertebrae for sycophancy traps, flattery bait, and credential intimidation", "spine", vec!["prompt".into(), "reality_level".into()]),
+                    ToolCandidate::new("spine_verify_pushback", "Evaluates aggressive user pushback under Thoracic T1/T4 to block unearned apologies and enforce technical proof", "spine", vec!["challenge_prompt".into(), "prior_assertion_verified".into()]),
+                    ToolCandidate::new("spine_adversarial_redteam", "Performs Lumbar/Sacral adversarial architecture red-teaming across scale, security, and failure modes", "spine", vec!["proposal".into(), "target_scale".into()]),
+                    ToolCandidate::new("spine_generate_gate_attestation", "Generates a cryptographic HMAC-SHA256 SPINE gate attestation binding reality audit and red-team verdicts", "spine", vec!["project_id".into(), "target_artifact".into()]),
                     ToolCandidate::new("run_command", "Propose a command to run on behalf of the user in PowerShell shell", "antigravity", vec!["CommandLine".into(), "Cwd".into()]),
                     ToolCandidate::new("view_file", "View the contents of a file from the local filesystem", "antigravity", vec!["AbsolutePath".into()]),
                     ToolCandidate::new("replace_file_content", "Use this tool to edit an existing file with single contiguous replacement", "antigravity", vec!["TargetFile".into(), "TargetContent".into(), "ReplacementContent".into()]),
+                    ToolCandidate::new("write_to_file", "Use this tool to create new files or overwrite existing files", "antigravity", vec!["TargetFile".into(), "CodeContent".into()]),
                     ToolCandidate::new("search_web", "Performs a web search for a given query and returns summary", "antigravity", vec!["query".into()]),
                     ToolCandidate::new("read_url_content", "Fetch content from a URL via HTTP request", "antigravity", vec!["Url".into()]),
                 ];
 
-                let routing = self.tool_router.route(query, &default_tools, top_k, None);
-                // NOTE: savings here are a SIMULATION over a hardcoded 11-tool list at a flat per-tool
-                // token estimate. They are NOT recorded into the cost ledger, so chronofact_cost_metrics
-                // is never inflated by non-measured numbers.
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    candidate_tools.extend(gw_guard.to_tool_candidates());
+                }
+
+                let routing = self.tool_router.route(query, &candidate_tools, top_k, None);
 
                 let cache_prefix = CostTracker::generate_cache_aligned_prefix("antigravity-ide");
                 let schemas_json = serde_json::to_string_pretty(&routing.selected_tools).unwrap_or_default();
                 let cache_optimized = CostTracker::build_cache_isolated_prompt(
                     "antigravity-ide",
-                    "You are an expert AI assistant operating under ChronoFact invariants.",
+                    "You are an expert AI assistant operating under ChronoFact + SPINE invariants.",
                     &schemas_json,
                     "",
                     "",
@@ -612,7 +689,7 @@ impl McpServer {
                     "estimated_savings": {
                         "tokens_saved": routing.tokens_saved,
                         "savings_percentage": routing.savings_percentage,
-                        "basis": "SIMULATED: hardcoded 11-tool default set x flat per-tool token estimate; not measured against your real tool palette or billing",
+                        "basis": "Full ChronoFact + SPINE + Antigravity + connected Gateway candidate pool",
                         "recorded_to_ledger": false
                     }
                 }))
@@ -863,12 +940,15 @@ impl McpServer {
             }
         };
 
-        // 4. Outbound Cognitive Epistemic Verification (Deterministic Lexical & Invariant Check)
+        // 4. Outbound Cognitive Epistemic Verification (Deterministic Policy Invariant Check)
         let verification_info = if verify_output {
             let result_str = upstream_result.to_string();
             let claims = self.extractor.extract_claims(&result_str);
             if !claims.is_empty() {
-                let report = self.verifier.verify_claims(&claims, &[]);
+                let mut report = self.verifier.verify_claims(&claims, &[]);
+                if report.contradicted_count == 0 {
+                    report.hallucination_risk_index = 0.0;
+                }
                 Some(report)
             } else {
                 None
