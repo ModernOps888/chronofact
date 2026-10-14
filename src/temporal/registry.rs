@@ -302,6 +302,17 @@ impl ModelRegistry {
 
             // ==================== DeepSeek Models ====================
             ModelHorizon {
+                model_id: "deepseek-v4-1-flash".to_string(),
+                display_name: "DeepSeek V4.1 Flash".to_string(),
+                vendor: "DeepSeek".to_string(),
+                public_release_date: NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
+                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+                is_frontier: true,
+                status: "Active (Frontier MoE)".to_string(),
+                notes: "High-speed MoE frontier coding and reasoning model by DeepSeek. Released August 2026.".to_string(),
+            },
+            ModelHorizon {
                 model_id: "deepseek-r1".to_string(),
                 display_name: "DeepSeek R1".to_string(),
                 vendor: "DeepSeek".to_string(),
@@ -350,7 +361,12 @@ impl ModelRegistry {
                 self.models.insert("gemini4-argon".to_string(), m.clone());
                 self.models.insert("gemini4argon".to_string(), m.clone());
                 self.models.insert("argon".to_string(), m.clone());
+            } else if m.model_id == "gemini-3-8-flash" {
+                self.models.insert("google/gemini-3.8-flash".to_string(), m.clone());
+                self.models.insert("gemini-3.8-flash".to_string(), m.clone());
             } else if m.model_id == "gpt-6-astra" {
+                self.models.insert("openai/astra-6".to_string(), m.clone());
+                self.models.insert("openai/gpt-6-astra".to_string(), m.clone());
                 self.models.insert("astra-6".to_string(), m.clone());
                 self.models.insert("astr-6".to_string(), m.clone());
                 self.models.insert("astr6".to_string(), m.clone());
@@ -359,6 +375,8 @@ impl ModelRegistry {
                 self.models.insert("gpt-6".to_string(), m.clone());
                 self.models.insert("gpt6".to_string(), m.clone());
             } else if m.model_id == "gpt-6-1-sol" {
+                self.models.insert("openai/sol-6.1".to_string(), m.clone());
+                self.models.insert("openai/gpt-6.1-sol".to_string(), m.clone());
                 self.models.insert("sol-6-1".to_string(), m.clone());
                 self.models.insert("sol-6.1".to_string(), m.clone());
                 self.models.insert("sol6.1".to_string(), m.clone());
@@ -366,19 +384,27 @@ impl ModelRegistry {
                 self.models.insert("sol6".to_string(), m.clone());
                 self.models.insert("gpt-6.1-sol".to_string(), m.clone());
             } else if m.model_id == "claude-opus-5-5" {
+                self.models.insert("anthropic/claude-opus-5.5".to_string(), m.clone());
+                self.models.insert("claude-opus-5.5".to_string(), m.clone());
                 self.models.insert("opus-5-5".to_string(), m.clone());
                 self.models.insert("opus-5.5".to_string(), m.clone());
                 self.models.insert("claude-5-5-opus".to_string(), m.clone());
                 self.models.insert("opus5.5".to_string(), m.clone());
             } else if m.model_id == "claude-sonnet-5-5" {
+                self.models.insert("anthropic/claude-sonnet-5.5".to_string(), m.clone());
+                self.models.insert("claude-sonnet-5.5".to_string(), m.clone());
                 self.models.insert("sonnet-5-5".to_string(), m.clone());
                 self.models.insert("sonnet-5.5".to_string(), m.clone());
                 self.models.insert("claude-5-5-sonnet".to_string(), m.clone());
                 self.models.insert("sonnet5.5".to_string(), m.clone());
             } else if m.model_id == "grok-4-7" {
+                self.models.insert("x-ai/grok-4.7".to_string(), m.clone());
                 self.models.insert("grok-4.7".to_string(), m.clone());
                 self.models.insert("grok4.7".to_string(), m.clone());
                 self.models.insert("grok47".to_string(), m.clone());
+            } else if m.model_id == "deepseek-v4-1-flash" {
+                self.models.insert("deepseek/deepseek-v4.1-flash".to_string(), m.clone());
+                self.models.insert("deepseek-v4.1-flash".to_string(), m.clone());
             }
         }
     }

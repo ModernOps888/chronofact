@@ -214,9 +214,34 @@ impl McpServer {
                 let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
+                let is_native_cacheable = matches!(
+                    tool_name,
+                    "chronofact_temporal_check"
+                        | "chronofact_verify_claims"
+                        | "chronofact_verify_code_invariants"
+                        | "chronofact_cost_optimize"
+                );
+                if is_native_cacheable {
+                    if let Some(cached) = self.tool_cache.get(tool_name, &args) {
+                        let text = serde_json::to_string(&cached).unwrap_or_else(|_| cached.to_string());
+                        return Some(JsonRpcResponse::success(
+                            id,
+                            json!({
+                                "content": [{ "type": "text", "text": text }],
+                                "isError": false
+                            }),
+                        ));
+                    }
+                }
+
                 let tool_result = self.execute_tool(tool_name, &args).await;
                 match tool_result {
                     Ok(val) => {
+                        if is_native_cacheable {
+                            self.tool_cache.put(tool_name, &args, val.clone());
+                        } else if tool_name == "chronofact_memory_save" {
+                            self.tool_cache.invalidate_server("default");
+                        }
                         let result_obj = if val.is_object() && val.get("content").and_then(|c| c.as_array()).is_some() {
                             val
                         } else {
@@ -224,7 +249,7 @@ impl McpServer {
                                 "content": [
                                     {
                                         "type": "text",
-                                        "text": serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string())
+                                        "text": serde_json::to_string(&val).unwrap_or_else(|_| val.to_string())
                                     }
                                 ],
                                 "isError": false
@@ -321,7 +346,14 @@ impl McpServer {
         match name {
             "chronofact_temporal_check" => {
                 let requested_model_id = args.get("model_id").and_then(|v| v.as_str()).unwrap_or("");
-                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let query = args
+                    .get("query")
+                    .or_else(|| args.get("prompt"))
+                    .or_else(|| args.get("claim"))
+                    .or_else(|| args.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
                 let scan = self.scanner.scan(query);
 
                 // Dynamically detect model from prompt if not specified or if specific model query detected
@@ -415,10 +447,25 @@ impl McpServer {
                 };
                 let _ = self.memory.record_drift_event(&drift_event);
 
-                Ok(json!(analysis))
+                if compact && !analysis.is_model_outdated_or_retired && analysis.outdated_warnings.is_empty() {
+                    Ok(json!({
+                        "calibration_block": analysis.calibration_block,
+                        "model_id": analysis.model_id,
+                        "model_name": analysis.model_name,
+                        "temporal_risk_score": analysis.temporal_risk_score,
+                        "requires_grounding": analysis.requires_grounding,
+                        "is_model_outdated_or_retired": false
+                    }))
+                } else {
+                    Ok(json!(analysis))
+                }
             }
             "chronofact_ground_query" => {
-                let query = args.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
+                let query = args
+                    .get("query")
+                    .or_else(|| args.get("prompt"))
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing query")?;
                 let max = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
 
                 let sources = self.searcher.search(query, max).await?;
@@ -444,7 +491,13 @@ impl McpServer {
                 }))
             }
             "chronofact_verify_claims" => {
-                let response_text = args.get("response_text").and_then(|v| v.as_str()).ok_or("Missing response_text")?;
+                let response_text = args
+                    .get("response_text")
+                    .or_else(|| args.get("claim"))
+                    .or_else(|| args.get("prompt"))
+                    .or_else(|| args.get("content"))
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing response_text")?;
                 let sources: Vec<crate::research::SourceChunk> = if let Some(arr) = args.get("sources") {
                     serde_json::from_value(arr.clone()).map_err(|e| format!("Invalid 'sources' schema (expected [{{id,title,url,content}}]): {}", e))?
                 } else {
@@ -749,8 +802,18 @@ impl McpServer {
                 self.dispatch_upstream_tool(tool_name, &tool_args, verify_output, passthrough).await
             }
             "chronofact_verify_code_invariants" => {
-                let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let content = args.get("content").and_then(|v| v.as_str()).ok_or("Missing 'content'")?;
+                let file_path = args
+                    .get("file_path")
+                    .or_else(|| args.get("path"))
+                    .or_else(|| args.get("target"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let content = args
+                    .get("content")
+                    .or_else(|| args.get("code"))
+                    .or_else(|| args.get("proposal"))
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'content' (or 'code'/'proposal')")?;
                 let custom_rules: Option<Vec<crate::grounding::InvariantRule>> =
                     args.get("custom_rules").and_then(|v| serde_json::from_value(v.clone()).ok());
 
@@ -761,8 +824,18 @@ impl McpServer {
             }
             "chronofact_attestation_generate" => {
                 let project_id = args.get("project_id").and_then(|v| v.as_str()).unwrap_or("default");
-                let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let content = args.get("content").and_then(|v| v.as_str()).ok_or("Missing 'content'")?;
+                let file_path = args
+                    .get("file_path")
+                    .or_else(|| args.get("path"))
+                    .or_else(|| args.get("target"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let content = args
+                    .get("content")
+                    .or_else(|| args.get("code"))
+                    .or_else(|| args.get("proposal"))
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'content' (or 'code'/'proposal')")?;
                 let default_today = chrono::Utc::now().naive_utc().date().to_string();
                 let temporal_anchor = args.get("temporal_anchor").and_then(|v| v.as_str()).unwrap_or(&default_today);
 

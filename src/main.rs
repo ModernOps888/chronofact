@@ -100,6 +100,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     gw_guard.mark_server_disconnected(&dead_server);
                 }
             });
+            // Co-host the HTTP/SSE Epistemic Proxy & Cockpit API Server on 127.0.0.1:3030
+            // whenever Antigravity launches `chronofact.exe mcp` so both SPINE and Cockpit UI always have live access.
+            let state = Arc::new(AppState {
+                model_registry: Arc::new(ModelRegistry::new()),
+                temporal_scanner: Arc::new(TemporalScanner::new()),
+                search_engine: Arc::new(SearchEngine::new()),
+                claim_extractor: Arc::new(ClaimExtractor::new()),
+                fact_verifier: Arc::new(FactVerifier::new()),
+                memory: memory.clone(),
+                sanitizer: Arc::new(ContentSanitizer::new()),
+                rate_limiter: Arc::new(RateLimiter::default()),
+                tool_router: Arc::new(TfidfToolRouter::default()),
+                tool_cache: Arc::new(ToolResponseCache::default()),
+                cost_tracker: Arc::new(CostTracker::default()),
+                gateway: Some(gateway.clone()),
+            });
+            let bg_server = ApiServer::new(state, config.port);
+            tokio::spawn(async move {
+                bg_server.try_run_background().await;
+            });
+
             let mcp_server = McpServer::with_gateway(memory, Some(gateway));
             mcp_server.run_stdio().await?;
         }

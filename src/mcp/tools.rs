@@ -5,35 +5,39 @@ pub fn list_tools() -> Value {
         "tools": [
             {
                 "name": "chronofact_temporal_check",
-                "description": "Examines a query against a model's knowledge cutoff and estimated training freeze date. Detects temporal risk, newly released tools, and generates an un-jammable calibration prompt.",
+                "description": "Checks query against model knowledge cutoff/training freeze. Detects temporal drift, retired models, and emits a calibration anchor.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "model_id": {
                             "type": "string",
-                            "description": "Target model identifier (e.g. 'gemini-4-argon', 'claude-opus-5-5', 'gemini-3-8-flash', 'gpt-6-astra', 'gpt-6-1-sol')"
+                            "description": "Model ID (e.g. 'gemini-4-argon', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6-astra', 'gpt-6-1-sol', 'grok-4-7')"
                         },
                         "query": {
                             "type": "string",
-                            "description": "The user query or prompt to check for temporal drift"
+                            "description": "User query or prompt"
+                        },
+                        "compact": {
+                            "type": "boolean",
+                            "description": "Return compact token-saving anchor payload"
                         }
                     },
-                    "required": ["model_id", "query"]
+                    "required": ["query"]
                 }
             },
             {
                 "name": "chronofact_ground_query",
-                "description": "Performs real-time web retrieval, validates URLs against SSRF, and sanitizes untrusted content against indirect prompt injections.",
+                "description": "Real-time web grounding with SSRF firewall and indirect prompt-injection sanitization.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "The search query to ground with real-time web documentation"
+                            "description": "Search query to ground"
                         },
                         "max_results": {
                             "type": "integer",
-                            "description": "Maximum number of search evidence chunks (default: 4)"
+                            "description": "Max evidence chunks (default: 4)"
                         }
                     },
                     "required": ["query"]
@@ -41,17 +45,17 @@ pub fn list_tools() -> Value {
             },
             {
                 "name": "chronofact_verify_claims",
-                "description": "Decomposes a text response into atomic propositions, checks each against retrieved source evidence using deterministic lexical and invariant rules, and scores hallucination risk.",
+                "description": "Extracts atomic propositions and fenced code blocks, verifies against 2026 ground truth and code invariants, and scores hallucination risk.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "response_text": {
                             "type": "string",
-                            "description": "The LLM response text or code commentary to audit for factual accuracy"
+                            "description": "Response text or code to verify"
                         },
                         "sources": {
                             "type": "array",
-                            "description": "List of source chunks to verify against",
+                            "description": "Optional evidence chunks",
                             "items": { "type": "object" }
                         }
                     },
@@ -60,95 +64,59 @@ pub fn list_tools() -> Value {
             },
             {
                 "name": "chronofact_memory_save",
-                "description": "Persists an architectural invariant, tech stack version, or project rule into L3 semantic memory so it is remembered across all chats.",
+                "description": "Persists an architectural invariant, tech stack version, or rule into L3 semantic SQLite memory.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": "Identifier for the project"
-                        },
-                        "entity_name": {
-                            "type": "string",
-                            "description": "Name of the entity, package, schema, or rule"
-                        },
-                        "entity_type": {
-                            "type": "string",
-                            "description": "Type: TECH_STACK, API_CONTRACT, ARCHITECTURE_RULE, DATABASE_SCHEMA"
-                        },
-                        "definition": {
-                            "type": "string",
-                            "description": "Detailed invariant or architectural specification"
-                        },
-                        "version": {
-                            "type": "string",
-                            "description": "Version string or status"
-                        }
+                        "project_id": { "type": "string", "description": "Project ID" },
+                        "entity_name": { "type": "string", "description": "Entity or rule name" },
+                        "entity_type": { "type": "string", "description": "TECH_STACK, API_CONTRACT, ARCHITECTURE_RULE, DATABASE_SCHEMA" },
+                        "definition": { "type": "string", "description": "Invariant specification" },
+                        "version": { "type": "string", "description": "Version string" }
                     },
                     "required": ["project_id", "entity_name", "entity_type", "definition"]
                 }
             },
             {
                 "name": "chronofact_memory_dossier",
-                "description": "Retrieves the persistent Project Truth Dossier containing active tech stack, architectural invariants, and decisions from previous chat sessions.",
+                "description": "Retrieves Project Truth Dossier with relevance-gated Zero-Pollution Guard.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": "Identifier for the project"
-                        },
-                        "query": {
-                            "type": "string",
-                            "description": "Optional user prompt to relevance-gate memory retrieval and enforce the Zero-Pollution Guard (returns empty if unrelated)"
-                        }
+                        "project_id": { "type": "string", "description": "Project ID" },
+                        "query": { "type": "string", "description": "Optional query for relevance gating" }
                     },
                     "required": ["project_id"]
                 }
             },
             {
                 "name": "chronofact_query",
-                "description": "Full-cycle epistemic pipeline: checks temporal cutoff, retrieves grounded search, injects cross-session memory, and prepares verification context.",
+                "description": "Full-cycle epistemic pipeline: temporal horizon + search grounding + L3 memory dossier + KV cache isolation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": "Project ID (e.g. 'chronofact' or current workspace name)"
-                        },
-                        "model_id": {
-                            "type": "string",
-                            "description": "Selected model identifier"
-                        },
-                        "query": {
-                            "type": "string",
-                            "description": "User prompt"
-                        }
+                        "project_id": { "type": "string", "description": "Project ID" },
+                        "model_id": { "type": "string", "description": "Model ID" },
+                        "query": { "type": "string", "description": "User prompt" }
                     },
                     "required": ["project_id", "model_id", "query"]
                 }
             },
             {
                 "name": "chronofact_cost_optimize",
-                "description": "Evaluates a prompt or task against available tools using TF-IDF routing, pruning irrelevant tool schemas to cut prompt tokens by 70-90% and generate prompt-cache alignment anchors.",
+                "description": "Routes tools via BM25/TF-IDF + subword expansion, pruning irrelevant schemas by 70-90% with KV cache prefix isolation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The user prompt or task goal to evaluate for tool routing"
-                        },
-                        "top_k": {
-                            "type": "integer",
-                            "description": "Maximum number of relevant tools to retain (default: 4)"
-                        }
+                        "query": { "type": "string", "description": "Task query for tool routing" },
+                        "top_k": { "type": "integer", "description": "Max tools to retain (default: 4)" }
                     },
                     "required": ["query"]
                 }
             },
             {
                 "name": "chronofact_cost_metrics",
-                "description": "Returns real-time token savings, prompt cache hit rate, and estimated USD cost saved across the session.",
+                "description": "Returns session token savings, tool cache hit rate, and estimated USD saved.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -156,51 +124,33 @@ pub fn list_tools() -> Value {
             },
             {
                 "name": "gateway_find_tools",
-                "description": "Searches across all connected upstream MCP servers and native tools using TF-IDF semantic relevance. Returns matched tools with full schemas, slashing prompt token bloat by 80%+.",
+                "description": "Searches native and upstream MCP tools via BM25/TF-IDF semantic routing.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Natural language description of what you want to accomplish"
-                        },
-                        "top_k": {
-                            "type": "integer",
-                            "description": "Number of tools to return (default: 5)"
-                        }
+                        "query": { "type": "string", "description": "Capability query" },
+                        "top_k": { "type": "integer", "description": "Tools to return (default: 5)" }
                     },
                     "required": ["query"]
                 }
             },
             {
                 "name": "gateway_call_tool",
-                "description": "Executes a tool on a multiplexed upstream MCP server with inbound security sanitization, idempotent caching, and outbound anti-hallucination verification.",
+                "description": "Executes an upstream MCP tool with security sanitization, FNV-1a read-only caching, and claim verification.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Exact name or fully-qualified name (server/tool) of the upstream tool"
-                        },
-                        "arguments": {
-                            "type": "object",
-                            "description": "Arguments to pass to the tool matching its inputSchema"
-                        },
-                        "verify_output": {
-                            "type": "boolean",
-                            "description": "Whether to perform deterministic lexical and invariant anti-hallucination claim audit on tool output (default: true)"
-                        },
-                        "passthrough": {
-                            "type": "boolean",
-                            "description": "When true, returns raw upstream MCP content without metadata wrapping and bypasses argument threat blocking for drop-in gateway compatibility (default: false)"
-                        }
+                        "name": { "type": "string", "description": "Tool name or server/tool FQN" },
+                        "arguments": { "type": "object", "description": "Tool arguments" },
+                        "verify_output": { "type": "boolean", "description": "Audit output claims (default: true)" },
+                        "passthrough": { "type": "boolean", "description": "Return raw content (default: false)" }
                     },
                     "required": ["name"]
                 }
             },
             {
                 "name": "gateway_list_servers",
-                "description": "Lists all connected upstream MCP servers, transport types (stdio/HTTP), tool counts, and connection health.",
+                "description": "Lists connected upstream MCP servers, tool counts, and health.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -208,67 +158,39 @@ pub fn list_tools() -> Value {
             },
             {
                 "name": "chronofact_verify_code_invariants",
-                "description": "Performs enterprise architectural and security invariant audits on source code, PR diffs, or manifests (detecting SQL injection, hardcoded secrets, layer/DAL leaks, deprecated libraries, and SSRF). Returns structured pass/block report.",
+                "description": "Audits source code/diffs across Rust, TS/JS/React, Python, C/C++/CUDA, Go, SQL, and PowerShell against 12 security, memory-safety, and anti-hallucination invariants.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Target relative or absolute file path being audited (e.g. 'src/services/billing.rs')"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The source code, diff, or configuration to evaluate against enterprise invariants"
-                        },
-                        "custom_rules": {
-                            "type": "array",
-                            "description": "Optional custom architectural invariant rules to enforce",
-                            "items": { "type": "object" }
-                        }
+                        "file_path": { "type": "string", "description": "Target file path" },
+                        "content": { "type": "string", "description": "Source code or diff to audit" },
+                        "custom_rules": { "type": "array", "description": "Optional custom rules", "items": { "type": "object" } }
                     },
                     "required": ["file_path", "content"]
                 }
             },
             {
                 "name": "chronofact_attestation_generate",
-                "description": "Generates a cryptographically signed Invariant Attestation certificate (SHA-256 HMAC) binding code content, temporal anchor, rules evaluated, and verification verdict for CI/CD gates.",
+                "description": "Generates an HMAC-SHA256 Invariant Attestation certificate (CF-2026-v1) binding code SHA-256, temporal anchor, and audit verdict.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": "Identifier of the project"
-                        },
-                        "file_path": {
-                            "type": "string",
-                            "description": "Path of the verified file or diff"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The exact audited content"
-                        },
-                        "temporal_anchor": {
-                            "type": "string",
-                            "description": "Active temporal anchor string or evaluation date"
-                        }
+                        "project_id": { "type": "string", "description": "Project ID" },
+                        "file_path": { "type": "string", "description": "Verified file path" },
+                        "content": { "type": "string", "description": "Audited content" },
+                        "temporal_anchor": { "type": "string", "description": "Evaluation date" }
                     },
                     "required": ["project_id", "file_path", "content"]
                 }
             },
             {
                 "name": "chronofact_expand_tool_palette",
-                "description": "Recovers and injects additional tool schemas on demand during multi-step execution. Use when the current pruned toolset lacks necessary operations (e.g. database, config, terminal, filesystem) to resolve downstream tasks.",
+                "description": "Recovers additional tool schemas on demand via BM25/TF-IDF when operating with a pruned tool palette.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query_or_category": {
-                            "type": "string",
-                            "description": "Description of the operation or category needed (e.g. 'database sql execution', 'write configuration file', 'terminal command')"
-                        },
-                        "top_k": {
-                            "type": "integer",
-                            "description": "Number of matching tool schemas to recover (default: 4)"
-                        }
+                        "query_or_category": { "type": "string", "description": "Operation or category needed" },
+                        "top_k": { "type": "integer", "description": "Schemas to recover (default: 4)" }
                     },
                     "required": ["query_or_category"]
                 }

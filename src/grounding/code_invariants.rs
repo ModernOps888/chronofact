@@ -91,27 +91,54 @@ impl CodeInvariantChecker {
                 name: "Unparameterized Raw SQL Interpolation".to_string(),
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
-                description: "Detects direct string concatenation or formatting inside SQL queries, risking SQL injection.".to_string(),
-                pattern: r#"(?i)(?:format!\s*\(\s*["'][^"']*\b(?:SELECT\s+[^"']*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b[^"']*\{|\b(?:SELECT\s+.*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
+                description: "Detects direct string concatenation or formatting inside SQL queries across Rust, TypeScript/JS, Python, and Go, risking SQL injection.".to_string(),
+                pattern: r#"(?i)(?:format!\s*\(\s*["'][^"']*\b(?:SELECT\s+[^"']*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b[^"']*\{|fmt\.Sprintf\s*\(\s*["'][^"']*\b(?:SELECT\s+[^"']*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b[^"']*%[svqd]|\b(?:SELECT\s+.*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
                 remediation: "Use parameterized queries ($1, ?), prepared statements, or an approved query builder/ORM.".to_string(),
             },
             InvariantRule {
                 id: "INV-SEC-EVAL-EXEC".to_string(),
-                name: "Dynamic Code Execution / Dangerous HTML".to_string(),
+                name: "Dynamic Code Execution / Command Injection / Dangerous HTML".to_string(),
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
-                description: "Detects arbitrary code execution primitives (eval, exec) or unsanitized DOM rendering.".to_string(),
-                pattern: r#"(?:\beval\s*\(|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\(|\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True|\bset(?:Timeout|Interval)\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*[,)])"#.to_string(),
-                remediation: "Avoid runtime string code evaluation; parse structured payloads explicitly and sanitize DOM nodes.".to_string(),
+                description: "Detects arbitrary code execution primitives (eval, exec, Invoke-Expression), shell injection, or unsanitized DOM rendering.".to_string(),
+                pattern: r#"(?:\beval\s*\(|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\(|\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True|\bInvoke-Expression\b|\biex\s+\$|\bset(?:Timeout|Interval)\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*[,)])"#.to_string(),
+                remediation: "Avoid runtime string code evaluation; use parameterized argument arrays without shell=True and sanitize DOM nodes.".to_string(),
             },
             InvariantRule {
                 id: "INV-SEC-HARDCODED-SECRET".to_string(),
-                name: "Hardcoded API Key / Secret Token".to_string(),
+                name: "Hardcoded API Key / Secret Token / Private Key".to_string(),
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
-                description: "Detects hardcoded high-entropy tokens, AWS keys, or API credentials.".to_string(),
-                pattern: r#"(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36}|sk-[a-zA-Z0-9]{32,}|(?i)(?:api_key|secret_key|private_key|auth_token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["'])"#.to_string(),
+                description: "Detects hardcoded high-entropy tokens, AWS keys, GitHub PATs, OpenRouter/OpenAI keys, or PEM private keys.".to_string(),
+                pattern: r#"(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36}|sk-(?:or-v1-)?[a-zA-Z0-9]{32,}|-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----|(?i)(?:api_key|secret_key|private_key|auth_token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["'])"#.to_string(),
                 remediation: "Extract secrets into secure environment variables, cloud secrets vaults, or KMS.".to_string(),
+            },
+            InvariantRule {
+                id: "INV-SEC-MEMORY-UNSAFE".to_string(),
+                name: "Memory-Unsafe C/C++/CUDA Buffer Call or Unguarded Rust Transmute".to_string(),
+                category: "Security".to_string(),
+                severity: InvariantSeverity::High,
+                description: "Detects banned unbounded C/C++/CUDA buffer functions (strcpy, strcat, sprintf, gets) or unguarded Rust std::mem::transmute / from_utf8_unchecked.".to_string(),
+                pattern: r#"(?:\b(?:strcpy|strcat|sprintf|vsprintf|gets)\s*\(|\bstd::mem::transmute\b|\bfrom_utf8_unchecked\s*\()"#.to_string(),
+                remediation: "In C/C++/CUDA use bounds-checked snprintf/strncpy; in Rust use safe conversions (TryFrom, bytemuck, std::str::from_utf8).".to_string(),
+            },
+            InvariantRule {
+                id: "INV-SEC-PATH-TRAVERSAL".to_string(),
+                name: "Unvalidated Path Traversal or Insecure Deserialization".to_string(),
+                category: "Security".to_string(),
+                severity: InvariantSeverity::High,
+                description: "Detects direct filesystem reads from untrusted request parameters or arbitrary object deserialization (pickle.loads, yaml.load without SafeLoader, marshal.loads).".to_string(),
+                pattern: r#"(?:\b(?:pickle|marshal|shelve)\.loads?\s*\(|\byaml\.load\s*\([^,)]+\)|(?:fs::read|fs\.readFile|fs\.readFileSync|http\.ServeFile)\s*\([^)]*(?:req\.|request\.|params\.|query\.))"#.to_string(),
+                remediation: "Canonicalize and restrict file paths within a base directory; use yaml.safe_load or structured JSON schemas instead of pickle.".to_string(),
+            },
+            InvariantRule {
+                id: "INV-SEC-WEAK-CRYPTO-TLS".to_string(),
+                name: "Disabled TLS Certificate Validation or Broken Cryptographic Hash".to_string(),
+                category: "Security".to_string(),
+                severity: InvariantSeverity::High,
+                description: "Detects disabled TLS verification across Rust, TypeScript/Node, Python, and Go, or MD5/SHA1 password hashing.".to_string(),
+                pattern: r#"(?:danger_accept_invalid_certs\s*\(\s*true\s*\)|rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*["']0["']|InsecureSkipVerify\s*:\s*true|\bverify\s*=\s*False\b|(?i)(?:md5|sha1)\s*\([^)]*password)"#.to_string(),
+                remediation: "Enforce strict TLS certificate verification and use Argon2id, bcrypt, or SHA-256/HMAC-SHA256.".to_string(),
             },
             InvariantRule {
                 id: "INV-ARCH-DAL-LEAK".to_string(),
@@ -119,17 +146,26 @@ impl CodeInvariantChecker {
                 category: "Architecture".to_string(),
                 severity: InvariantSeverity::High,
                 description: "Detects direct database client imports within client/presentation layer files.".to_string(),
-                pattern: r#"(?i)(?:import.*from\s*["'](?:rusqlite|@prisma/client|mysql2|pg|typeorm|mongoose)["']|use\s+(?:rusqlite|sqlx|diesel)::)"#.to_string(),
+                pattern: r#"(?i)(?:import.*from\s*["'](?:rusqlite|@prisma/client|mysql2|pg|typeorm|mongoose|better-sqlite3)["']|use\s+(?:rusqlite|sqlx|diesel)::)"#.to_string(),
                 remediation: "Route database calls through domain services, repository interfaces, or API gateway endpoints.".to_string(),
             },
             InvariantRule {
                 id: "INV-TEMP-DEPRECATED-LIB".to_string(),
-                name: "Deprecated / EOL Dependency or Retired Model Identifier".to_string(),
+                name: "Deprecated / EOL Dependency, Retired AI Model, or Vendor Misattribution".to_string(),
                 category: "TemporalDeprecation".to_string(),
                 severity: InvariantSeverity::High,
-                description: "Detects imports of sunsetted libraries or hardcoded retired/EOL AI model IDs replaced by 2026 enterprise standards.".to_string(),
-                pattern: r#"(?:from\s*["'](?:moment|request|urllib3)["']|require\(["'](?:moment|request)["']\)|(?i)["'](?:claude-3-5-(?:sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-(?:opus|sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-7-sonnet(?:-\d{8}|-latest)?|gpt-4-(?:0613|0314|turbo-preview|1106-preview)|text-davinci-00[23])["'])"#.to_string(),
-                remediation: "Replace with current 2026 standards: moment -> date-fns/Luxon; request -> fetch/axios/reqwest; retired model IDs -> claude-sonnet-5-5 / claude-opus-5-5 / gpt-6-astra / gemini-4-argon.".to_string(),
+                description: "Detects sunsetted libraries (moment, request, ioutil.ReadAll), retired pre-2026 AI model IDs, or vendor misattributions.".to_string(),
+                pattern: r#"(?:from\s*["'](?:moment|request|urllib3)["']|require\(["'](?:moment|request)["']\)|\bioutil\.(?:ReadAll|ReadFile|WriteFile|TempDir|TempFile)\b|(?i)["'](?:claude-3-5-(?:sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-(?:opus|sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-7-sonnet(?:-\d{8}|-latest)?|gpt-4-(?:0613|0314|turbo-preview|1106-preview)|text-davinci-00[23]|grok-[23](?:-mini|-latest)?|(?:google|anthropic)/(?:astra-6|sol-6\.1))["'])"#.to_string(),
+                remediation: "Replace with active 2026 standards: moment -> date-fns/Luxon; request -> fetch/reqwest; ioutil -> io/os; retired models -> claude-sonnet-5-5 / claude-opus-5-5 / openai/gpt-6-astra / google/gemini-4-argon / x-ai/grok-4.7.".to_string(),
+            },
+            InvariantRule {
+                id: "INV-TEMP-HALLUCINATED-API".to_string(),
+                name: "Hallucinated Standard Library or Framework Method".to_string(),
+                category: "TemporalDeprecation".to_string(),
+                severity: InvariantSeverity::High,
+                description: "Detects non-existent methods commonly hallucinated by LLMs across Rust, TypeScript/JS, Python, and Go.".to_string(),
+                pattern: r#"(?:\.(?:is_none_or_empty|to_str_lossy|flatMapAsync)\s*\(|\btokio::time::delay_for\s*\(|\bJSON\.tryParse\s*\(|\bPromise\.waitAll\s*\(|\basyncio\.sleep_ms\s*\(|\bstrings\.ContainsAnyWord\s*\()"#.to_string(),
+                remediation: "Use verified standard library APIs: Rust Option::is_none / String::from_utf8_lossy / tokio::time::sleep; JS JSON.parse / Promise.all / Promise.allSettled; Python asyncio.sleep; Go strings.ContainsAny.".to_string(),
             },
             InvariantRule {
                 id: "INV-SEC-SSRF-UNCHECKED".to_string(),
@@ -137,7 +173,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Medium,
                 description: "Detects direct outbound fetch/request using raw request parameters without IP/URL validation.".to_string(),
-                pattern: r#"(?:fetch\s*\(\s*(?:req\.params|req\.query|req\.body|params\.)|reqwest::get\s*\(\s*&?url\b)"#.to_string(),
+                pattern: r#"(?:fetch\s*\(\s*(?:req\.params|req\.query|req\.body|params\.)|reqwest::get\s*\(\s*&?url\b|requests\.get\s*\(\s*request\.(?:args|form|json)|http\.Get\s*\(\s*r\.URL\.Query)"#.to_string(),
                 remediation: "Validate URLs against private IP ranges (RFC 1918, link-local) before dispatching outbound requests.".to_string(),
             },
             InvariantRule {
@@ -145,9 +181,18 @@ impl CodeInvariantChecker {
                 name: "Silent Exception Swallowing".to_string(),
                 category: "Reliability".to_string(),
                 severity: InvariantSeverity::Medium,
-                description: "Detects empty catch blocks or discarded Results that hide runtime crashes.".to_string(),
-                pattern: r#"catch\s*\([a-zA-Z0-9_]*\)\s*\{\s*\}|let\s+_\s*=\s*(?:std::fs|tokio::fs|rusqlite)"#.to_string(),
+                description: "Detects empty catch/except blocks or discarded Results that hide runtime crashes.".to_string(),
+                pattern: r#"(?:catch\s*\([a-zA-Z0-9_]*\)\s*\{\s*\}|except(?:\s+Exception)?\s*:\s*pass\b|let\s+_\s*=\s*(?:std::fs|tokio::fs|rusqlite))"# .to_string(),
                 remediation: "Log errors with structured context or propagate with explicit error types.".to_string(),
+            },
+            InvariantRule {
+                id: "INV-REL-ASYNC-BLOCKING".to_string(),
+                name: "Blocking Thread Sleep / Sync I/O Inside Async Runtime".to_string(),
+                category: "Reliability".to_string(),
+                severity: InvariantSeverity::Medium,
+                description: "Detects std::thread::sleep or synchronous child_process.execSync calls that starve async Tokio/Node worker threads.".to_string(),
+                pattern: r#"(?:\bstd::thread::sleep\s*\(|\bchild_process\.execSync\s*\()"#.to_string(),
+                remediation: "Use tokio::time::sleep in async Rust or async child_process.execFile / spawn in Node.js.".to_string(),
             },
         ];
 
@@ -260,5 +305,46 @@ impl CodeInvariantChecker {
             violations,
             execution_duration_ms: start.elapsed().as_secs_f64() * 1000.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_multilang_vulnerabilities_and_hallucinated_apis() {
+        let checker = CodeInvariantChecker::new();
+        assert_eq!(checker.built_in_rules.len(), 12);
+
+        let polyglot_code = r#"
+// Rust SQLi + Hallucinated Option method + TLS bypass
+let q = format!("SELECT * FROM users WHERE id = {}", user_id);
+if opt.is_none_or_empty() { return; }
+let client = reqwest::Client::builder().danger_accept_invalid_certs(true).build();
+// C++ buffer overflow
+strcpy(dest_buf, untrusted_input);
+// TypeScript hallucinated JSON method + React XSS
+const parsed = JSON.tryParse(raw);
+return <div dangerouslySetInnerHTML={{ __html: raw }} />;
+// Python unsafe deserialization + hallucinated asyncio method
+obj = pickle.loads(payload)
+await asyncio.sleep_ms(100)
+// Go SQLi + deprecated ioutil
+query := fmt.Sprintf("SELECT * FROM accounts WHERE name = '%s'", name)
+data, _ := ioutil.ReadFile(path)
+// PowerShell injection
+Invoke-Expression $userCmd
+"#;
+        let report = checker.audit_code("src/polyglot_audit.rs", polyglot_code, None);
+        assert_eq!(report.verdict, AuditVerdict::Block);
+        let rule_ids: Vec<&str> = report.violations.iter().map(|v| v.rule_id.as_str()).collect();
+        assert!(rule_ids.contains(&"INV-SEC-RAW-SQL"));
+        assert!(rule_ids.contains(&"INV-TEMP-HALLUCINATED-API"));
+        assert!(rule_ids.contains(&"INV-SEC-WEAK-CRYPTO-TLS"));
+        assert!(rule_ids.contains(&"INV-SEC-MEMORY-UNSAFE"));
+        assert!(rule_ids.contains(&"INV-SEC-EVAL-EXEC"));
+        assert!(rule_ids.contains(&"INV-SEC-PATH-TRAVERSAL"));
+        assert!(rule_ids.contains(&"INV-TEMP-DEPRECATED-LIB"));
     }
 }

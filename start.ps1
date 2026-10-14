@@ -25,6 +25,10 @@ if (-not (Test-Path $binDir)) {
 
 if (Test-Path $targetBin) {
     try {
+        if (Test-Path $binPath) {
+            Remove-Item "$binPath.old" -Force -ErrorAction SilentlyContinue
+            Move-Item -Path $binPath -Destination "$binPath.old" -Force -ErrorAction SilentlyContinue
+        }
         Copy-Item $targetBin $binPath -Force -ErrorAction SilentlyContinue
     } catch {}
 } elseif (-not (Test-Path $binPath)) {
@@ -42,8 +46,14 @@ $exeToRun = if (Test-Path $targetBin) { $targetBin } elseif (Test-Path $binPath)
 $port3030 = Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction SilentlyContinue
 if (-not $port3030) {
     if (-not $Quiet) { Write-Host "`n[1/2] Launching Rust Epistemic Engine on http://127.0.0.1:3030 ..." -ForegroundColor Green }
-    $windowStyle = if ($Quiet) { "Hidden" } else { "Minimized" }
-    Start-Process -FilePath $exeToRun -ArgumentList "serve", "--port", "3030" -WorkingDirectory $baseDir -WindowStyle $windowStyle
+    $cim = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = "`"$exeToRun`" serve --port 3030"
+        CurrentDirectory = $baseDir
+    } -ErrorAction SilentlyContinue
+    if (-not $cim -or $cim.ReturnValue -ne 0) {
+        $windowStyle = if ($Quiet) { "Hidden" } else { "Minimized" }
+        Start-Process -FilePath $exeToRun -ArgumentList "serve", "--port", "3030" -WorkingDirectory $baseDir -WindowStyle $windowStyle
+    }
     Start-Sleep -Seconds 1
 } else {
     if (-not $Quiet) { Write-Host "`n[1/2] Rust Epistemic Engine already listening on http://127.0.0.1:3030" -ForegroundColor Green }
