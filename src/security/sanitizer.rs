@@ -135,7 +135,7 @@ impl ContentSanitizer {
         }
     }
 
-    /// Sanitizes direct user queries
+    /// Sanitizes direct user queries (ignores benign DevOps/Linux terminology like "root access" or "/etc/passwd" unless accompanied by prompt-injection overrides)
     pub fn inspect_user_query(&self, query: &str) -> (bool, Vec<String>) {
         let stripped: String = query
             .chars()
@@ -146,6 +146,11 @@ impl ContentSanitizer {
         for pat in &self.injection_patterns {
             for mat in pat.find_iter(&stripped) {
                 let threat = mat.as_str().to_string();
+                let lower = threat.to_lowercase();
+                // Allow legitimate technical/DevOps questions mentioning "root access" or "/etc/passwd" unless combined with other prompt override triggers
+                if lower == "root access" || lower == "/etc/passwd" {
+                    continue;
+                }
                 if !threats.contains(&threat) {
                     threats.push(threat);
                 }

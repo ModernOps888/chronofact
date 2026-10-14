@@ -951,7 +951,19 @@ impl McpServer {
 
         if is_read_only {
             if let Some(cached) = self.tool_cache.get(&canonical_tool_name, args) {
-                if passthrough {
+                let has_multimodal_content = cached
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .map(|arr| {
+                        arr.iter().any(|item| {
+                            matches!(
+                                item.get("type").and_then(|t| t.as_str()),
+                                Some("image") | Some("resource") | Some("audio")
+                            )
+                        })
+                    })
+                    .unwrap_or(false);
+                if passthrough || has_multimodal_content {
                     return Ok(cached);
                 } else {
                     return Ok(json!({
@@ -984,7 +996,7 @@ impl McpServer {
         };
 
         let exec_future = target.execute();
-        let upstream_result = match tokio::time::timeout(std::time::Duration::from_secs(10), exec_future).await {
+        let upstream_result = match tokio::time::timeout(std::time::Duration::from_secs(60), exec_future).await {
             Ok(Ok(res)) => {
                 let mut cb_guard = self.circuit_breakers.write().await;
                 if let Some(cb) = cb_guard.get_mut(&server_name) {
@@ -1001,12 +1013,12 @@ impl McpServer {
                 let tripped = cb.record_timeout(3);
                 if tripped {
                     return Err(format!(
-                        "Upstream tool execution timed out after 10s. Circuit breaker TRIPPED for server '{}' (3 consecutive timeouts).",
+                        "Upstream tool execution timed out after 60s. Circuit breaker TRIPPED for server '{}' (3 consecutive timeouts).",
                         server_name
                     ));
                 } else {
                     return Err(format!(
-                        "Upstream tool execution timed out after 10s on server '{}' (strike {}/3).",
+                        "Upstream tool execution timed out after 60s on server '{}' (strike {}/3).",
                         server_name, cb.consecutive_timeouts
                     ));
                 }
@@ -1014,8 +1026,18 @@ impl McpServer {
         };
 
         // 4. Outbound Cognitive Epistemic Verification (Deterministic Policy Invariant Check)
+        // Extract only text blocks when MCP content array is present so base64 image/resource payloads are never scanned as prose claims.
         let verification_info = if verify_output {
-            let result_str = upstream_result.to_string();
+            let result_str = if let Some(content_arr) = upstream_result.get("content").and_then(|c| c.as_array()) {
+                content_arr
+                    .iter()
+                    .filter(|item| item.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                upstream_result.to_string()
+            };
             let claims = self.extractor.extract_claims(&result_str);
             if !claims.is_empty() {
                 let mut report = self.verifier.verify_claims(&claims, &[]);
@@ -1059,7 +1081,20 @@ impl McpServer {
             }
         }
 
-        if passthrough {
+        let has_multimodal_content = upstream_result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter().any(|item| {
+                    matches!(
+                        item.get("type").and_then(|t| t.as_str()),
+                        Some("image") | Some("resource") | Some("audio")
+                    )
+                })
+            })
+            .unwrap_or(false);
+
+        if passthrough || has_multimodal_content {
             Ok(upstream_result)
         } else {
             Ok(json!({
