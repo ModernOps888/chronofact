@@ -168,23 +168,32 @@ impl FactVerifier {
         .any(|kw| statement_lower.contains(kw));
 
         // Configurable Policy Invariant Rule 1: Retired Claude 3.5 models
-        if (statement_lower.contains("3.5 sonnet")
+        if statement_lower.contains("3.5 sonnet")
             || statement_lower.contains("claude 3.5")
-            || statement_lower.contains("sonnet 3.5"))
-            && (statement_lower.contains("latest")
+            || statement_lower.contains("sonnet 3.5")
+        {
+            if has_retirement_or_negation {
+                return (
+                    VerificationStatus::Entailed,
+                    0.98,
+                    vec!["policy_invariant_rule".to_string()],
+                    "POLICY ENTAILED: Statement accurately reflects that Claude 3.5 Sonnet is retired (EOL Oct 2025) and superseded by Claude 5.5 generation.".to_string(),
+                );
+            }
+            if statement_lower.contains("latest")
                 || statement_lower.contains("current")
                 || statement_lower.contains("newest")
                 || statement_lower.contains("active")
                 || statement_lower.contains("flagship")
-                || statement_lower.contains("available"))
-            && !has_retirement_or_negation
-        {
-            return (
-                VerificationStatus::Contradicted,
-                0.05,
-                vec!["policy_invariant_rule".to_string()],
-                "POLICY CONTRADICTION: Claude 3.5 Sonnet was officially RETIRED by Anthropic on October 28, 2025. It is no longer supported or accessible via API. Current active models are Claude Sonnet 5.5 and Claude Opus 5.5.".to_string(),
-            );
+                || statement_lower.contains("available")
+            {
+                return (
+                    VerificationStatus::Contradicted,
+                    0.05,
+                    vec!["policy_invariant_rule".to_string()],
+                    "POLICY CONTRADICTION: Claude 3.5 Sonnet was officially RETIRED by Anthropic on October 28, 2025. It is no longer supported or accessible via API. Current active models are Claude Sonnet 5.5 and Claude Opus 5.5.".to_string(),
+                );
+            }
         }
 
         // Configurable Policy Invariant Rule 2: Superseded Grok models
@@ -281,6 +290,36 @@ impl FactVerifier {
                 0.99,
                 vec!["policy_invariant_rule".to_string()],
                 "POLICY ENTAILED: GPT-6 Astra and GPT-6.1 Sol are policy-registered OpenAI frontier models launched in September 2026.".to_string(),
+            );
+        }
+
+        // Configurable Policy Invariant Rule 6: Hallucinated Standard Library APIs in Prose Claims
+        let hallucinated_stdlib_apis = [
+            "is_none_or_empty",
+            "to_str_lossy",
+            "flatmapasync",
+            "tokio::time::delay_for",
+            "json.tryparse",
+            "promise.waitall",
+            "asyncio.sleep_ms",
+            "strings.containsanyword",
+        ];
+        let warns_about_hallucination = statement_lower.contains("hallucinat")
+            || statement_lower.contains("does not exist")
+            || statement_lower.contains("non-existent")
+            || statement_lower.contains("no such")
+            || statement_lower.contains("never use")
+            || statement_lower.contains("do not use");
+        if !warns_about_hallucination
+            && hallucinated_stdlib_apis
+                .iter()
+                .any(|api| statement_lower.contains(api))
+        {
+            return (
+                VerificationStatus::Contradicted,
+                0.02,
+                vec!["policy_invariant_rule".to_string()],
+                "POLICY CONTRADICTION: Claim recommends a non-existent, hallucinated standard library API (INV-TEMP-HALLUCINATED-API).".to_string(),
             );
         }
 

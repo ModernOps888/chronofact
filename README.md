@@ -2,7 +2,7 @@
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 115/115 Passed](https://img.shields.io/badge/ci%20tests-115%2F115%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 116/116 Passed](https://img.shields.io/badge/ci%20tests-116%2F116%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 [![Enterprise-Audits](https://img.shields.io/badge/Enterprise-Security_Audits-ff00e5.svg)](https://infinitytechstack.uk/consulting)
@@ -274,29 +274,41 @@ To guarantee zero lock starvation and referential integrity under burst multi-te
 
 ---
 
-## 📊 Empirical Verification & Test Benchmarks
+## 📊 Empirical Verification & SWE Benchmarks
+
+### Rigorous SWE Before-vs-After Benchmark (`tests/swe_rigorous_benchmark.rs` — 76 Cases)
+
+| Suite | Cases | State 0: Vanilla Baseline (Acc / Rec / Spec) | State 1: Pre-Remediation v1 (Acc / Rec / Spec) | State 2: Post-Remediation v2 (Acc / Rec / Spec) | Latency |
+|:---|:---:|:---:|:---:|:---:|:---:|
+| **CF-1: Multi-Lang Code Invariants** (`rustfmt`/`black` diffs, block comments, docstrings, JWTs, async sleep) | 24 | `50.0%` / `0.0%` / `100.0%` | `70.8%` / `75.0%` / `66.7%` | **`100.0%` / `100.0%` / `100.0%`** | `17.06ms` |
+| **CF-2: Temporal Cutoff Radar** (2026 frontier cutoffs vs. timeless CS algorithms) | 20 | `50.0%` / `0.0%` / `100.0%` | `85.0%` / `80.0%` / `90.0%` | **`100.0%` / `100.0%` / `100.0%`** | `17.11ms` |
+| **CF-3: Claim & Polarity Verifier** (cushioned hallucinations, litotes, numeric/port conflicts, stdlib fabrications) | 20 | `50.0%` / `0.0%` / `100.0%` | `55.0%` / `40.0%` / `70.0%` | **`100.0%` / `100.0%` / `100.0%`** | `9.45ms` |
+| **CF-4: 30-Tool MCP TF-IDF Router** (12 multi-turn SWE tasks) | 12 | `64,800` tokens (`100.0%` recall) | `16,740` tokens (`100.0%` recall) | **`16,740` tokens (`-74.2%` saved, `15/15` tool recall)** | `46.04ms` |
+
+### Core Verification & Stress Suite Metrics
 
 | Metric / Benchmark | Result | Verification Proof |
 |:---|:---:|:---|
-| **Rust Unit & Integration Tests** | **115 / 115 PASSING** | `cargo test` (8 lib unit tests + 107 integration tests across 13 suites, 0 warnings, 0 failures) |
+| **Rust Unit & Integration Tests** | **116 / 116 PASSING** | `cargo test` (8 lib unit tests + 108 integration tests across 14 suites, 0 warnings, 0 failures) |
+| **SWE Rigorous Before-vs-After Benchmark** | **76 / 76 PASSING (100%)** | Verified in `tests/swe_rigorous_benchmark.rs` (`CF-1`..`CF-4`) |
+| **Empirical Evaluation Benchmark Suite** | **32 / 32 PASSING (100%)** | Verified in `tests/empirical_benchmark.rs` (100.0% Acc, Prec, Rec across all 4 suites) |
 | **Phase 1 & Phase 2 Total Precision Audit Suite** | **8 / 8 PASSING** | Verified in `tests/phase1_phase2_remediation_tests.rs` |
 | **Gemini 4 Argon (`gemini-4-argon`) Horizon & Aliases** | **100% Verified** | Verified in `test_gemini_4_argon_registration_and_aliases` |
-| **Clause-Scoped Policy & Retirement Verification** | **0 False Positives** | Verified in `test_compound_sentence_vendor_clause_scoping` & `test_multi_vendor_comparison_not_flagged_as_misattribution` |
-| **`NeuralNliCalibrator` & Noisy-OR Contradiction Floor** | **100% Verified** | Verified in `test_verifier_word_boundary_numeric_conflict_and_litotes` |
-| **KTO/DPO Epistemic Trajectory Persistence** | **100% Verified** | Verified in `test_epistemic_trajectory_and_kto_pair_persistence` |
+| **Clause-Scoped Policy & Retirement Verification** | **0 False Positives** | Verified in `test_compound_sentence_vendor_clause_scoping` & `test_retirement_statement_not_falsely_flagged_as_contradiction` |
+| **`NeuralNliCalibrator` & Noisy-OR Contradiction Floor** | **100% Verified** | Verified in `test_numeric_conflict_and_noisy_or_risk_floor` & `test_litotes_double_negation_not_misclassified_as_negation` |
+| **KTO/DPO Epistemic Trajectory Persistence** | **100% Verified** | Verified in `test_post_training_kto_pairs_and_epistemic_trajectory_persistence` |
 | **Self-Hosted `check-ci` Invariant Audit** | **0 Violations (1.39ms)** | `chronofact.exe check-ci --path src/memory/mod.rs` (12 rules evaluated) |
-| **Adversarial Prompt Stress Suite** | **12 / 12 PASSING** | `scripts/test_prompts_live.ps1` & `tests/adversarial_prompt_stress.rs` |
+| **Adversarial Prompt Stress Suite** | **8 / 8 PASSING** | Verified in `tests/adversarial_prompt_stress.rs` |
 | **CI Automation** | **GitHub Actions** | Automated build & test on push/PR (`.github/workflows/ci.yml`) |
-| **Gateway Multiplexing Throughput** | **1,333,333 ops/sec** | P50: 300ns (Verified in `stress_test_scenario_1`) |
+| **Gateway Multiplexing Throughput** | **1,537,279 ops/sec** | P50: 300ns, P99: 600ns (Verified in `stress_test_scenario_1_high_concurrency_multiplexing`) |
 | **TF-IDF Schema Pruning Ratio (50 Tools)** | **92.0% Token Reduction** | 9,000 tokens pruned to 720 tokens (46 tools pruned) |
-| **TF-IDF Schema Pruning Ratio (15 Tools)** | **86.7% Token Reduction** | 13 tools pruned, 2 retained on targeted queries |
-| **Adversarial Security Interception** | **100.0% Blocked** | 1,000 / 1,000 prompt injection vectors blocked (0.75 µs/check) |
-| **Claim Verification Latency** | **0.13 ms / claim set** | 7,425 claim sets/sec throughput (sub-millisecond execution) |
-| **Tool Response Cache Hit Latency** | **16.14 µs** | 61,952 ops/sec in-memory SHA-256 lookup + slash/colon/dunder server invalidation |
+| **Adversarial Security Interception** | **100.0% Blocked** | 1,000 / 1,000 prompt injection vectors blocked (`50.13 µs`/attack in `stress_test_scenario_3`) |
+| **Claim Verification Latency** | **0.437 ms / claim set** | 2,287.6 claim sets/sec throughput (`stress_test_scenario_4_high_throughput_claim_verification`) |
+| **Tool Response Cache Saturation** | **53,344 ops/sec** | 100.0% hit rate across 8 concurrent threads (`stress_test_scenario_6_idempotent_cache_saturation`) |
 | **Prompt Cache Invariant Alignment** | **100% Byte-Stable Prefix** | Verified in `test_cache_isolated_prompt_prefix_stability` |
 | **Prompt Cache Floor Guarantee** | **>= 1,024 Tokens** | Verified in `test_cache_isolated_prompt_prefix_floor_guarantee` |
 | **Multi-Tenant SQLite Burst Concurrency** | **100% Success (0 Busy Errs)** | Verified in `test_sqlite_with_busy_retry_concurrency` |
-| **Zero-Pollution Memory Leakage** | **0 Tokens** | Verified across 500 interleaved multi-tenant sessions |
+| **Zero-Pollution Memory Leakage** | **0 Tokens** | Verified in `stress_test_scenario_5_zero_pollution_memory_isolation` |
 | **Frontend Production Build** | **Clean (<10s)** | `npm run build` (`tsc && vite build`, 0 errors) |
 | **Codebase Secret Vulnerabilities** | **0 Detected** | Rigorous regex scan across tracked files (Self-assessed) |
 

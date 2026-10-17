@@ -12,7 +12,6 @@ use chronofact::memory::{
 };
 use chronofact::research::{PackageMetadata, SourceChunk};
 use chronofact::temporal::TemporalScanner;
-use std::time::Duration;
 use tempfile::tempdir;
 
 #[test]

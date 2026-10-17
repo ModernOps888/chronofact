@@ -96,7 +96,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects direct string concatenation or formatting inside SQL queries across Rust, TypeScript/JS, Python, and Go, risking SQL injection.".to_string(),
-                pattern: r#"(?i)(?:format!\s*\(\s*["'][^"']*\b(?:SELECT\s+[^"']*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b[^"']*\{|fmt\.Sprintf\s*\(\s*["'][^"']*\b(?:SELECT\s+[^"']*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b[^"']*%[svqd]|\b(?:SELECT\s+.*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
+                pattern: r#"(?i)(?:format!\s*\(\s*"[^"]*\b(?:SELECT\s+[^"]*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b[^"]*\{|fmt\.Sprintf\s*\(\s*"[^"]*\b(?:SELECT\s+[^"]*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b[^"]*%[svqd]|\b(?:SELECT\s+.*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|[rb]?f(?:"[^"]*\b(?:select\s+.*\bfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table|alter\s+table)\b[^"]*\{|'[^']*\b(?:select\s+.*\bfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table|alter\s+table)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
                 remediation: "Use parameterized queries ($1, ?), prepared statements, or an approved query builder/ORM.".to_string(),
             },
             InvariantRule {
@@ -113,8 +113,8 @@ impl CodeInvariantChecker {
                 name: "Hardcoded API Key / Secret Token / Private Key".to_string(),
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
-                description: "Detects hardcoded high-entropy tokens, AWS keys, GitHub PATs, OpenRouter/OpenAI keys, or PEM private keys.".to_string(),
-                pattern: r#"(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36}|sk-(?:or-v1-)?[a-zA-Z0-9]{32,}|-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----|(?i)(?:api_key|secret_key|private_key|auth_token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["'])"#.to_string(),
+                description: "Detects hardcoded high-entropy tokens, AWS keys, GitHub PATs, OpenRouter/OpenAI keys, JWTs, or PEM private keys.".to_string(),
+                pattern: r#"(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36}|sk-(?:or-v1-)?[a-zA-Z0-9]{32,}|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----|(?i)(?:api_key|secret_key|private_key|auth_token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["'])"#.to_string(),
                 remediation: "Extract secrets into secure environment variables, cloud secrets vaults, or KMS.".to_string(),
             },
             InvariantRule {
@@ -240,14 +240,63 @@ impl CodeInvariantChecker {
             .split(|c| c == '/' || c == '\\')
             .any(|seg| matches!(seg, "frontend" | "client" | "ui" | "components" | "pages" | "app" | "views" | "src-ui"));
 
+        let has_any_fn_decl = content.contains("fn ") || content.contains("function ") || content.contains("def ");
+        let mut in_block_comment = false;
+        let mut in_py_docstring = false;
+        let mut in_async_scope = !has_any_fn_decl;
+        let mut sql_window_skip_until: usize = 0;
+
         for (idx, line) in lines.iter().enumerate() {
             let line_num = idx + 1;
             let trimmed = line.trim();
 
+            // Track multi-line /* ... */ block comments statefully
+            if in_block_comment {
+                if let Some(end_pos) = trimmed.find("*/") {
+                    in_block_comment = false;
+                    let after = trimmed[end_pos + 2..].trim();
+                    if after.is_empty() {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+            if trimmed.starts_with("/*") {
+                if !trimmed[2..].contains("*/") {
+                    in_block_comment = true;
+                }
+                continue;
+            }
+
+            // Track multi-line Python """ ... """ or ''' ... ''' docstrings statefully
+            let triple_delim = if trimmed.contains("\"\"\"") {
+                Some("\"\"\"")
+            } else if trimmed.contains("'''") {
+                Some("'''")
+            } else {
+                None
+            };
+            if in_py_docstring {
+                if triple_delim.is_some() {
+                    in_py_docstring = false;
+                }
+                continue;
+            }
+            if let Some(delim) = triple_delim {
+                if trimmed.starts_with(delim) {
+                    let rest = &trimmed[delim.len()..];
+                    if !rest.contains(delim) {
+                        in_py_docstring = true;
+                    }
+                    continue;
+                }
+            }
+
             if trimmed.is_empty()
                 || trimmed.starts_with("//")
                 || trimmed.starts_with('#')
-                || trimmed.starts_with("/*")
+                || trimmed.starts_with("--")
                 || trimmed == "*"
                 || trimmed.starts_with("* ")
                 || trimmed.starts_with("*/")
@@ -255,12 +304,58 @@ impl CodeInvariantChecker {
                 continue;
             }
 
+            // Track async vs synchronous function scope for INV-REL-ASYNC-BLOCKING
+            if trimmed.contains("async fn ")
+                || trimmed.contains("async move")
+                || trimmed.contains("async {")
+                || trimmed.contains("async function ")
+                || trimmed.starts_with("#[tokio::")
+            {
+                in_async_scope = true;
+            } else if (trimmed.starts_with("pub fn ") || trimmed.starts_with("fn "))
+                && !trimmed.contains("async ")
+            {
+                in_async_scope = false;
+            }
+
             for (rule, regex) in self.built_in_rules.iter().chain(compiled_custom.iter()) {
                 if rule.id == "INV-ARCH-DAL-LEAK" && !is_frontend_path {
                     continue; // Skip DAL leak check on backend files
                 }
 
-                if regex.is_match(line) {
+                if rule.id == "INV-REL-ASYNC-BLOCKING"
+                    && line.contains("std::thread::sleep")
+                    && !in_async_scope
+                {
+                    continue; // Legitimate synchronous sleep inside non-async function
+                }
+
+                if rule.id == "INV-SEC-HARDCODED-SECRET" {
+                    let upper = trimmed.to_ascii_uppercase();
+                    let is_placeholder_or_header = upper.contains("_HEADER")
+                        || upper.contains("YOUR_API_KEY")
+                        || upper.contains("REPLACE_ME")
+                        || upper.contains("X-INTERNAL-");
+                    if is_placeholder_or_header && !trimmed.contains("AKIA") && !trimmed.contains("ghp_") && !trimmed.contains("sk-") && !trimmed.contains("eyJ") {
+                        continue;
+                    }
+                }
+
+                let mut matched = regex.is_match(line);
+                if !matched
+                    && rule.id == "INV-SEC-RAW-SQL"
+                    && idx >= sql_window_skip_until
+                    && (trimmed.contains("format!(") || trimmed.contains("fmt.Sprintf("))
+                {
+                    let end_idx = (idx + 2).min(lines.len().saturating_sub(1));
+                    let joined = lines[idx..=end_idx].join(" ");
+                    if regex.is_match(&joined) {
+                        matched = true;
+                        sql_window_skip_until = end_idx + 1;
+                    }
+                }
+
+                if matched {
                     violations.push(InvariantViolation {
                         rule_id: rule.id.clone(),
                         rule_name: rule.name.clone(),

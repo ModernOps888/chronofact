@@ -19,6 +19,7 @@ pub struct AtomicClaim {
 
 pub struct ClaimExtractor {
     sentence_split_regex: Regex,
+    cushion_prefix_regex: Regex,
     conversational_filter_regex: Regex,
     api_keyword_regex: Regex,
     version_regex: Regex,
@@ -34,7 +35,14 @@ impl ClaimExtractor {
     pub fn new() -> Self {
         Self {
             sentence_split_regex: Regex::new(r"([.!?]+(\s+|$))").unwrap(),
-            conversational_filter_regex: Regex::new(r"(?i)^(hello|hi|sure|certainly|i can help|let's|in this guide|as you know|hope this helps|feel free)\b").unwrap(),
+            cushion_prefix_regex: Regex::new(
+                r"(?i)^(?:(?:certainly|sure|of course|as you know|in this guide|great question|good question)[,!:]?\s+|let'?s\s+(?:just\s+)?)",
+            )
+            .unwrap(),
+            conversational_filter_regex: Regex::new(
+                r"(?i)^(hello|hi|sure|certainly|i can help|i'd be happy to help|i would be happy to help|let's get started|hope this helps|feel free)\b",
+            )
+            .unwrap(),
             api_keyword_regex: Regex::new(r"(?i)\b(function|method|endpoint|struct|class|parameter|returns?|supports?|implements?|deprecated|released|features?|protocol)\b").unwrap(),
             version_regex: Regex::new(r"(?i)(\b(next\.?js|react|rust|node|python|vue|angular)\s+\d+\b|\bv?\d+(\.\d+)+\b|\bv\d+\b)").unwrap(),
         }
@@ -58,8 +66,10 @@ impl ClaimExtractor {
 
             let sentences = split_prose_sentences(trimmed_line, &self.sentence_split_regex);
             for sentence in sentences {
-                let s = sentence.trim().trim_start_matches(|c: char| c == '-' || c == '*' || c.is_whitespace());
-                // Filter short utterances or greetings
+                let raw_s = sentence.trim().trim_start_matches(|c: char| c == '-' || c == '*' || c.is_whitespace());
+                let stripped_cow = self.cushion_prefix_regex.replace(raw_s, "");
+                let s = stripped_cow.trim();
+                // Filter short utterances or pure greetings
                 if s.len() < 12 || self.conversational_filter_regex.is_match(s) {
                     continue;
                 }

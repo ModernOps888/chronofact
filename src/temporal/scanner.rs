@@ -33,7 +33,7 @@ impl TemporalScanner {
         Self {
             year_regex: Regex::new(r"\b(20[2-3][0-9])\b").unwrap(),
             version_regex: Regex::new(r"\bv?(\d+\.\d+(\.\d+)?(-[a-zA-Z0-9.]+)?)\b").unwrap(),
-            keyword_regex: Regex::new(r"(?i)\b(latest|newest|recently|current|this year|last month|changelog|roadmap|release[ds]?|deprecat(ed|ion)?|breaking change[s]?|what'?s new|what is new|new features?)\b").unwrap(),
+            keyword_regex: Regex::new(r"(?i)\b(latest|newest|recently|current|this year|last month|changelog|roadmap|release[ds]?|deprecat(ed|ion)?|breaking change[s]?|what'?s new|what is new|new features?|knowledge cutoff|cutoff|training freeze|weight freeze|context window|computer use)\b").unwrap(),
             tech_entity_regex: Regex::new(r"(?i)\b(claude|gpt-?[456o]?|gemini(-?[34](\.[0-9])?(-?(flash|pro|ultra|argon))?)?|argon|astra(-?6)?|astr(-?6)?|sol(-?6(\.1)?)?|deepseek|llama|opus(-?5(\.5)?)?|sonnet(-?5(\.5)?)?|haiku|grok(-?[1234](\.[0-9])?)?|xai|openai|anthropic|deepmind|meta|o[134](-mini)?|react|next\.?js|vite|rust|cargo|tokio|axum|actix|serde|reqwest|sqlx|diesel|polars|tauri|bevy|tracing|clap|python|pip|uv|pydantic|fastapi|django|flask|torch|pytorch|tensorflow|numpy|pandas|scipy|scikit-learn|langchain|llamaindex|transformers|huggingface|celery|sqlalchemy|alembic|node\.?js|typescript|javascript|bun|deno|tailwind|kubernetes|docker|fastapi|astro|arxiv|biorxiv|swe-bench|mmlu|gpqa|sota|benchmark|rlhf|dpo|grpo|zig|svelte(kit)?|vue|angular|nuxt|remix|solid-?js|htmx|drizzle|prisma|zod|vitest|jest|playwright|cypress|golang|kotlin|swift(ui)?|flutter|dart|elixir|laravel|rails|spring boot|terraform|ansible|postgres(ql)?|redis|valkey|mongodb|kafka|nginx|webpack|esbuild|rollup|eslint|biome|turbopack|rspack|hono|fastify|ollama|langgraph|go\s?1\.\d{1,2}(\.\d+)?)\b").unwrap(),
             outdated_model_regex: Regex::new(r"(?i)\b(claude(-|\s)?3([.-][57])?(-|\s)?(sonnet|haiku|opus)|sonnet(-|\s)?3([.-][57])|opus(-|\s)?3|grok(-|\s)?[123](\.0|\.5)?|gpt(-|\s)?4(o|-turbo|-mini)?)\b").unwrap(),
             software_intent_regex: Regex::new(r"(?i)\b(how to|how do i|implement|best practice|pattern|architecture|setup|config|migration|migrate|migrating|upgrading|installing|breaking change|upgrade|install|dependency|package|crate|library|framework|module|api|sdk|cli|vendor|owner|who made|who developed)\b").unwrap(),
@@ -211,8 +211,38 @@ impl TemporalScanner {
             score += (detected_entities.len() as f32 * 0.15).min(0.4);
         }
 
-        // Software implementation intent on tech entities indicates volatile library APIs
-        if has_software_intent && !detected_entities.is_empty() {
+        // 2025-2026 post-freeze frontier AI model entities inherently carry temporal horizon risk
+        let has_frontier_ai_entity = detected_entities.iter().any(|e| {
+            e.contains("gpt-6")
+                || e.contains("astra")
+                || e.contains("astr")
+                || e.contains("sol")
+                || e.contains("argon")
+                || e.contains("gemini-4")
+                || e.contains("gemini 4")
+                || e.contains("opus")
+                || e.contains("sonnet")
+                || e.contains("grok-4")
+                || e.contains("grok 4")
+                || e.starts_with("o3")
+                || e.starts_with("o4")
+        });
+        if has_frontier_ai_entity {
+            score += 0.20;
+        }
+
+        // Software implementation intent on volatile ecosystem entities (frameworks, libraries, crates,
+        // versions, or multiple tech entities—excluding a single bare base programming language like "rust" or "python"
+        // used in timeless CS algorithm exercises such as "Implement Dijkstra's shortest path in Rust").
+        const BARE_BASE_LANGUAGES: &[&str] = &[
+            "rust", "python", "javascript", "typescript", "golang", "kotlin", "swift", "dart", "elixir", "zig",
+        ];
+        let has_volatile_ecosystem_entity = detected_entities.len() > 1
+            || detected_entities
+                .iter()
+                .any(|e| !BARE_BASE_LANGUAGES.contains(&e.as_str()));
+
+        if has_software_intent && has_volatile_ecosystem_entity {
             score += 0.25;
         }
 
