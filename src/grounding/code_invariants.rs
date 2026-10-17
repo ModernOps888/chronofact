@@ -85,7 +85,11 @@ impl Default for CodeInvariantChecker {
 
 impl CodeInvariantChecker {
     pub fn new() -> Self {
-        let rules = vec![
+        static BUILT_IN_RULES: std::sync::OnceLock<Vec<(InvariantRule, Regex)>> =
+            std::sync::OnceLock::new();
+        let built_in_rules = BUILT_IN_RULES
+            .get_or_init(|| {
+                let rules = vec![
             InvariantRule {
                 id: "INV-SEC-RAW-SQL".to_string(),
                 name: "Unparameterized Raw SQL Interpolation".to_string(),
@@ -196,10 +200,12 @@ impl CodeInvariantChecker {
             },
         ];
 
-        let built_in_rules = rules
-            .into_iter()
-            .filter_map(|r| Regex::new(&r.pattern).ok().map(|re| (r, re)))
-            .collect();
+                rules
+                    .into_iter()
+                    .filter_map(|r| Regex::new(&r.pattern).ok().map(|re| (r, re)))
+                    .collect()
+            })
+            .clone();
 
         Self { built_in_rules }
     }

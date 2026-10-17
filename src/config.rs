@@ -20,7 +20,8 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Self {
-        let port = env::var("PORT")
+        let port = env::var("CHRONOFACT_PORT")
+            .or_else(|_| env::var("PORT"))
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or(3030);
@@ -54,8 +55,24 @@ impl Config {
 
         let mut candidates = Vec::new();
 
+        // 0. If running inside `bin/` of a workspace, prefer parent workspace root
+        if PathBuf::from("../Cargo.toml").exists() {
+            candidates.push(PathBuf::from("../servers.json"));
+        }
+
         // 1. Current working directory
         candidates.push(PathBuf::from("servers.json"));
+
+        // 1b. Binary directory parent if launched via `bin/chronofact`
+        if let Ok(exe_path) = env::current_exe() {
+            if let Some(bin_dir) = exe_path.parent() {
+                if bin_dir.file_name().and_then(|n| n.to_str()) == Some("bin") {
+                    if let Some(root_dir) = bin_dir.parent() {
+                        candidates.push(root_dir.join("servers.json"));
+                    }
+                }
+            }
+        }
 
         // 2. XDG_CONFIG_HOME / ~/.config on Unix/Linux/macOS
         if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
@@ -88,7 +105,7 @@ impl Config {
 
     /// Cross-platform discovery for SQLite database path
     pub fn discover_db_path() -> String {
-        if let Ok(path) = env::var("CHRONOFACT_DB") {
+        if let Ok(path) = env::var("CHRONOFACT_DB").or_else(|_| env::var("CHRONOFACT_DB_PATH")) {
             if !path.trim().is_empty() {
                 return path;
             }
@@ -96,8 +113,31 @@ impl Config {
 
         let mut candidates = Vec::new();
 
-        // 1. Current working directory if exists
-        candidates.push(PathBuf::from("chronofact_memory.db"));
+        // 0. If running inside `bin/` of a workspace, prefer parent workspace root over `bin/`
+        let in_bin_subdir = PathBuf::from("../Cargo.toml").exists()
+            && env::current_dir()
+                .ok()
+                .and_then(|d| d.file_name().map(|f| f == "bin"))
+                .unwrap_or(false);
+        if PathBuf::from("../Cargo.toml").exists() {
+            candidates.push(PathBuf::from("../chronofact_memory.db"));
+        }
+
+        // 1. Current working directory if not inside `bin/` subdirectory
+        if !in_bin_subdir {
+            candidates.push(PathBuf::from("chronofact_memory.db"));
+        }
+
+        // 1b. Binary directory parent if launched via `bin/chronofact`
+        if let Ok(exe_path) = env::current_exe() {
+            if let Some(bin_dir) = exe_path.parent() {
+                if bin_dir.file_name().and_then(|n| n.to_str()) == Some("bin") {
+                    if let Some(root_dir) = bin_dir.parent() {
+                        candidates.push(root_dir.join("chronofact_memory.db"));
+                    }
+                }
+            }
+        }
 
         // 2. XDG_DATA_HOME / ~/.local/share on Unix/Linux/macOS
         if let Ok(xdg) = env::var("XDG_DATA_HOME") {
@@ -125,7 +165,11 @@ impl Config {
             }
         }
 
-        "chronofact_memory.db".to_string()
+        if in_bin_subdir {
+            "../chronofact_memory.db".to_string()
+        } else {
+            "chronofact_memory.db".to_string()
+        }
     }
 
     pub fn load_servers_from_file(path: &str) -> anyhow::Result<Vec<UpstreamServerConfig>> {

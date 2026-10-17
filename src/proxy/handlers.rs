@@ -42,7 +42,7 @@ pub async fn health_check() -> impl IntoResponse {
         Json(json!({
             "status": "healthy",
             "service": "ChronoFact Epistemic Backbone",
-            "version": "0.1.0",
+            "version": env!("CARGO_PKG_VERSION"),
             "current_time": chrono::Utc::now().to_rfc3339()
         })),
     )

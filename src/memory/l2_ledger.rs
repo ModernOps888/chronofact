@@ -33,6 +33,35 @@ pub struct DriftEvent {
     pub ground_truth_retrieved: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpistemicTrajectory {
+    pub id: i64,
+    pub timestamp: String,
+    pub project_id: String,
+    pub model_id: String,
+    pub query: String,
+    pub draft_response: String,
+    pub verified_claims_json: String,
+    pub contradicted_claims_json: String,
+    pub unverified_claims_json: String,
+    pub source_evidence_json: String,
+    pub hallucination_risk_index: f32,
+    pub intervention_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostTrainingPair {
+    pub id: i64,
+    pub timestamp: String,
+    pub project_id: String,
+    pub prompt: String,
+    pub response: String,
+    pub label: String,
+    pub kto_weight: f32,
+    pub source_evidence: String,
+    pub reward_score: f32,
+}
+
 pub struct EpisodicLedger;
 
 impl EpisodicLedger {
@@ -88,10 +117,45 @@ impl EpisodicLedger {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS epistemic_trajectories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                query TEXT NOT NULL,
+                draft_response TEXT NOT NULL,
+                verified_claims_json TEXT NOT NULL,
+                contradicted_claims_json TEXT NOT NULL,
+                unverified_claims_json TEXT NOT NULL,
+                source_evidence_json TEXT NOT NULL,
+                hallucination_risk_index REAL NOT NULL,
+                intervention_type TEXT NOT NULL
+            );",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS post_training_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                response TEXT NOT NULL,
+                label TEXT NOT NULL,
+                kto_weight REAL NOT NULL,
+                source_evidence TEXT NOT NULL,
+                reward_score REAL NOT NULL
+            );",
+            [],
+        )?;
+
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
              CREATE INDEX IF NOT EXISTS idx_drift_events_project ON drift_events(project_id);
-             CREATE INDEX IF NOT EXISTS idx_cost_events_ts ON cost_events(timestamp);",
+             CREATE INDEX IF NOT EXISTS idx_cost_events_ts ON cost_events(timestamp);
+             CREATE INDEX IF NOT EXISTS idx_epistemic_trajectories_project ON epistemic_trajectories(project_id);
+             CREATE INDEX IF NOT EXISTS idx_post_training_pairs_project ON post_training_pairs(project_id);",
         )?;
 
         Ok(())
@@ -244,5 +308,107 @@ impl EpisodicLedger {
         } else {
             Ok((0, 0, 0, 0.0))
         }
+    }
+
+    pub fn record_epistemic_trajectory(conn: &Connection, traj: &EpistemicTrajectory) -> Result<i64> {
+        conn.execute(
+            "INSERT INTO epistemic_trajectories
+             (timestamp, project_id, model_id, query, draft_response, verified_claims_json, contradicted_claims_json, unverified_claims_json, source_evidence_json, hallucination_risk_index, intervention_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);",
+            params![
+                traj.timestamp,
+                traj.project_id,
+                traj.model_id,
+                traj.query,
+                traj.draft_response,
+                traj.verified_claims_json,
+                traj.contradicted_claims_json,
+                traj.unverified_claims_json,
+                traj.source_evidence_json,
+                traj.hallucination_risk_index,
+                traj.intervention_type,
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_recent_epistemic_trajectories(conn: &Connection, limit: usize) -> Result<Vec<EpistemicTrajectory>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, timestamp, project_id, model_id, query, draft_response, verified_claims_json, contradicted_claims_json, unverified_claims_json, source_evidence_json, hallucination_risk_index, intervention_type
+             FROM epistemic_trajectories
+             ORDER BY id DESC
+             LIMIT ?1;",
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(EpistemicTrajectory {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                project_id: row.get(2)?,
+                model_id: row.get(3)?,
+                query: row.get(4)?,
+                draft_response: row.get(5)?,
+                verified_claims_json: row.get(6)?,
+                contradicted_claims_json: row.get(7)?,
+                unverified_claims_json: row.get(8)?,
+                source_evidence_json: row.get(9)?,
+                hallucination_risk_index: row.get(10)?,
+                intervention_type: row.get(11)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn record_post_training_pair(conn: &Connection, pair: &PostTrainingPair) -> Result<i64> {
+        conn.execute(
+            "INSERT INTO post_training_pairs
+             (timestamp, project_id, prompt, response, label, kto_weight, source_evidence, reward_score)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
+            params![
+                pair.timestamp,
+                pair.project_id,
+                pair.prompt,
+                pair.response,
+                pair.label,
+                pair.kto_weight,
+                pair.source_evidence,
+                pair.reward_score,
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_post_training_pairs(conn: &Connection, limit: usize) -> Result<Vec<PostTrainingPair>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, timestamp, project_id, prompt, response, label, kto_weight, source_evidence, reward_score
+             FROM post_training_pairs
+             ORDER BY id DESC
+             LIMIT ?1;",
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(PostTrainingPair {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                project_id: row.get(2)?,
+                prompt: row.get(3)?,
+                response: row.get(4)?,
+                label: row.get(5)?,
+                kto_weight: row.get(6)?,
+                source_evidence: row.get(7)?,
+                reward_score: row.get(8)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
     }
 }

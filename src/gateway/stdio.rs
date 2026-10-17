@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::ChildStdin;
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use tracing::{debug, error, info, warn};
@@ -316,12 +316,13 @@ async fn reader_loop(
     pending: Arc<Mutex<HashMap<i64, oneshot::Sender<PendingResult>>>>,
     server_name: String,
 ) {
+    const MAX_STDIO_LINE_BYTES: u64 = 16 * 1024 * 1024;
     let mut reader = BufReader::new(stdout);
     let mut buf = Vec::new();
 
     loop {
         buf.clear();
-        let bytes_read = match reader.read_until(b'\n', &mut buf).await {
+        let bytes_read = match (&mut reader).take(MAX_STDIO_LINE_BYTES).read_until(b'\n', &mut buf).await {
             Ok(n) => n,
             Err(e) => {
                 error!("[{}] Error reading child stdout: {}", server_name, e);

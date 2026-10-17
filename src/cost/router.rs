@@ -49,6 +49,10 @@ pub struct RoutingResult {
     pub tokens_after: usize,
     pub tokens_saved: usize,
     pub savings_percentage: f32,
+    #[serde(default)]
+    pub cost_reduction_pct: f32,
+    #[serde(default)]
+    pub prompt_cache_anchor: String,
 }
 
 pub struct TfidfToolRouter {
@@ -177,6 +181,8 @@ impl TfidfToolRouter {
                 tokens_after: total_tokens,
                 tokens_saved: 0,
                 savings_percentage: 0.0,
+                cost_reduction_pct: 0.0,
+                prompt_cache_anchor: "[ CHRONOFACT_STATIC_TOOL_PALETTE_V1 ]".to_string(),
             };
         }
 
@@ -334,6 +340,7 @@ impl TfidfToolRouter {
         };
 
         let pruned_count = tools.len().saturating_sub(selected_tools.len());
+        let rounded_savings = (savings_percentage * 10.0).round() / 10.0;
 
         RoutingResult {
             query: query.to_string(),
@@ -343,7 +350,9 @@ impl TfidfToolRouter {
             tokens_before: total_tokens,
             tokens_after,
             tokens_saved,
-            savings_percentage: (savings_percentage * 10.0).round() / 10.0,
+            savings_percentage: rounded_savings,
+            cost_reduction_pct: rounded_savings,
+            prompt_cache_anchor: "[ CHRONOFACT_STATIC_TOOL_PALETTE_V1 ]".to_string(),
         }
     }
 
@@ -408,6 +417,7 @@ impl TfidfToolRouter {
             0.0
         };
         let pruned_count = tools.len().saturating_sub(selected_tools.len());
+        let rounded_savings = (savings_percentage * 10.0).round() / 10.0;
 
         RoutingResult {
             query: query.to_string(),
@@ -417,28 +427,47 @@ impl TfidfToolRouter {
             tokens_before: total_tokens,
             tokens_after,
             tokens_saved,
-            savings_percentage: (savings_percentage * 10.0).round() / 10.0,
+            savings_percentage: rounded_savings,
+            cost_reduction_pct: rounded_savings,
+            prompt_cache_anchor: "[ CHRONOFACT_STATIC_TOOL_PALETTE_V1 ]".to_string(),
         }
     }
 }
 
-/// Splits camelCase, PascalCase, snake_case, and kebab-case identifiers into constituent words
-/// while retaining the original tokens so `"createIssue"` indexes both `"create"`, `"issue"`, and `"createissue"`.
+/// Splits camelCase and PascalCase identifiers into constituent words while retaining the compound
+/// identifier only for tokens that actually split, preventing 2x TF duplication of normal words.
 fn expand_identifiers(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 32);
-    let chars: Vec<char> = text.chars().collect();
-    for i in 0..chars.len() {
-        let c = chars[i];
-        if i > 0 && c.is_uppercase() {
-            let prev = chars[i - 1];
-            let next_is_lower = chars.get(i + 1).map(|n| n.is_lowercase()).unwrap_or(false);
-            if prev.is_lowercase() || prev.is_ascii_digit() || (prev.is_uppercase() && next_is_lower) {
-                out.push(' ');
-            }
+    for raw_word in text.split(|c: char| !c.is_alphanumeric()) {
+        if raw_word.is_empty() {
+            continue;
         }
-        out.push(c);
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(raw_word);
+
+        let chars: Vec<char> = raw_word.chars().collect();
+        let mut split_word = String::new();
+        let mut did_split = false;
+        for i in 0..chars.len() {
+            let c = chars[i];
+            if i > 0 && c.is_uppercase() {
+                let prev = chars[i - 1];
+                let next_is_lower = chars.get(i + 1).map(|n| n.is_lowercase()).unwrap_or(false);
+                if prev.is_lowercase() || prev.is_ascii_digit() || (prev.is_uppercase() && next_is_lower) {
+                    split_word.push(' ');
+                    did_split = true;
+                }
+            }
+            split_word.push(c);
+        }
+        if did_split {
+            out.push(' ');
+            out.push_str(&split_word);
+        }
     }
-    format!("{} {}", text, out)
+    out
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -464,8 +493,8 @@ fn tokenize(text: &str) -> Vec<String> {
     let mut result = Vec::with_capacity(base_tokens.len() * 2);
     let mut seen_stems = HashSet::new();
     for tok in base_tokens {
-        // Add a 5-char subword stem for morphological variants (e.g., postgres/postgresql, repo/repository, migrate/migration)
-        if tok.chars().count() >= 6 && tok.is_ascii() {
+        // Add a 5-char subword stem for morphological variants (e.g., postgres/postgresql, query/queries, migrate/migration)
+        if tok.chars().count() >= 5 && tok.is_ascii() {
             let stem = format!("#{}", &tok[..5]);
             if seen_stems.insert(stem.clone()) {
                 result.push(stem);
@@ -478,15 +507,16 @@ fn tokenize(text: &str) -> Vec<String> {
 
 fn term_freq(tokens: &[String]) -> HashMap<String, f32> {
     let mut tf: HashMap<String, f32> = HashMap::new();
-    let total = tokens.len() as f32;
-    if total == 0.0 {
-        return tf;
-    }
+    let mut total_weight = 0.0_f32;
     for token in tokens {
-        *tf.entry(token.clone()).or_insert(0.0) += 1.0;
+        let w = if token.starts_with('#') { 0.5 } else { 1.0 };
+        *tf.entry(token.clone()).or_insert(0.0) += w;
+        total_weight += w;
     }
-    for val in tf.values_mut() {
-        *val /= total;
+    if total_weight > 0.0 {
+        for val in tf.values_mut() {
+            *val /= total_weight;
+        }
     }
     tf
 }

@@ -69,8 +69,10 @@ impl ToolExecutionTarget {
                         }
                     });
 
+                    let req_timeout = Duration::from_secs(config.request_timeout_secs.unwrap_or(30));
                     let mut builder = client
                         .post(&url)
+                        .timeout(req_timeout)
                         .header("Content-Type", "application/json")
                         .header("Accept", "application/json, text/event-stream")
                         .header("MCP-Protocol-Version", "2025-03-26");
@@ -114,8 +116,10 @@ impl ToolExecutionTarget {
                             }
                         });
 
+                        let hs_timeout = Duration::from_secs(config.handshake_timeout_secs.unwrap_or(15));
                         let mut init_builder = client
                             .post(&url)
+                            .timeout(hs_timeout)
                             .header("Content-Type", "application/json")
                             .header("Accept", "application/json, text/event-stream")
                             .header("MCP-Protocol-Version", "2025-03-26");
@@ -300,6 +304,14 @@ impl GatewayMultiplexer {
             warn!("⚠️ Gateway failed connecting to '{}' - registered in disconnected state", name);
         }
 
+        // Purge any pre-existing registrations for this server to prevent duplicate accumulation on reconnect
+        self.all_tools.retain(|t| t.server_name != name);
+        self.all_resources.retain(|r| r.server_name != name);
+        self.all_prompts.retain(|p| p.server_name != name);
+        self.tool_index.retain(|_, srv| srv != &name);
+        self.resource_index.retain(|_, srv| srv != &name);
+        self.prompt_index.retain(|_, srv| srv != &name);
+
         // Index tools with collision disambiguation (MCPlex FQN pattern)
         for tool in &tools {
             let registered = RegisteredTool::new(tool.clone(), &name);
@@ -472,17 +484,72 @@ impl GatewayMultiplexer {
             return Err(anyhow::anyhow!("Server '{}' is not connected", server_name));
         }
 
+        let prefix = format!("{}/", server_name);
+        let bare_uri = uri.strip_prefix(&prefix).unwrap_or(uri);
+
         if let Some(ref url) = server.config.url {
             let req = serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "resources/read",
-                "params": { "uri": uri }
+                "params": { "uri": bare_uri }
             });
             let resp = self.send_mcp_http_request(server_name, url, &server.config, &req).await?;
             resp.get("result").cloned().ok_or_else(|| anyhow::anyhow!("Resource read error: {:?}", resp.get("error")))
         } else if let Some(conn) = self.stdio_connections.get(server_name) {
-            conn.send_request("resources/read", serde_json::json!({ "uri": uri })).await
+            conn.send_request("resources/read", serde_json::json!({ "uri": bare_uri })).await
+        } else {
+            Err(anyhow::anyhow!("No connection for server '{}'", server_name))
+        }
+    }
+
+    /// Retrieve an upstream prompt by bare name or FQN (`server/prompt`)
+    pub async fn get_prompt(
+        &self,
+        name_or_fqn: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let server_name = self
+            .prompt_index
+            .get(name_or_fqn)
+            .ok_or_else(|| anyhow::anyhow!("Prompt '{}' not found in any connected server", name_or_fqn))?;
+
+        let server = self
+            .servers
+            .get(server_name)
+            .ok_or_else(|| anyhow::anyhow!("Server '{}' not registered", server_name))?;
+
+        if !server.connected {
+            return Err(anyhow::anyhow!("Server '{}' is not connected", server_name));
+        }
+
+        let prefix = format!("{}/", server_name);
+        let bare_name = name_or_fqn.strip_prefix(&prefix).unwrap_or(name_or_fqn);
+        let args_val = arguments.unwrap_or_else(|| serde_json::json!({}));
+
+        if let Some(ref url) = server.config.url {
+            let req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "prompts/get",
+                "params": {
+                    "name": bare_name,
+                    "arguments": args_val
+                }
+            });
+            let resp = self.send_mcp_http_request(server_name, url, &server.config, &req).await?;
+            resp.get("result")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Prompt get error: {:?}", resp.get("error")))
+        } else if let Some(conn) = self.stdio_connections.get(server_name) {
+            conn.send_request(
+                "prompts/get",
+                serde_json::json!({
+                    "name": bare_name,
+                    "arguments": args_val
+                }),
+            )
+            .await
         } else {
             Err(anyhow::anyhow!("No connection for server '{}'", server_name))
         }
@@ -776,9 +843,17 @@ impl GatewayMultiplexer {
         let mut current_session = self.get_http_session_id(server_name);
         let mut attempts = 0;
 
+        let method = payload.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        let req_timeout = if method == "initialize" {
+            Duration::from_secs(config.handshake_timeout_secs.unwrap_or(15))
+        } else {
+            Duration::from_secs(config.request_timeout_secs.unwrap_or(30))
+        };
+
         loop {
             attempts += 1;
             let mut builder = self.http_client.post(url)
+                .timeout(req_timeout)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json, text/event-stream")
                 .header("MCP-Protocol-Version", "2025-03-26");
@@ -799,7 +874,6 @@ impl GatewayMultiplexer {
             let status = resp.status();
 
             // Session recovery on 404: if 404 and we had a session ID, clear and re-initialize once
-            let method = payload.get("method").and_then(|m| m.as_str()).unwrap_or("");
             if status == reqwest::StatusCode::NOT_FOUND && current_session.is_some() && attempts == 1 && method != "initialize" {
                 warn!(
                     "Upstream server '{}' returned 404 for session {:?}. Session expired, re-initializing...",
@@ -822,7 +896,9 @@ impl GatewayMultiplexer {
                     }
                 });
 
+                let hs_timeout = Duration::from_secs(config.handshake_timeout_secs.unwrap_or(15));
                 let mut init_builder = self.http_client.post(url)
+                    .timeout(hs_timeout)
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json, text/event-stream")
                     .header("MCP-Protocol-Version", "2025-03-26");

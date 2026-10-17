@@ -55,13 +55,28 @@ impl HorizonCalculator {
         }
 
         // If the query touches recent years or entities, and the model is post-freeze:
-        let is_post_freeze_query = scan.mentioned_years.iter().any(|&yr| {
-            let model_freeze_year = model.estimated_training_freeze.year();
-            yr >= model_freeze_year
-        });
+        let model_freeze_year = model.estimated_training_freeze.year();
+        let is_post_freeze_query = scan.mentioned_years.iter().any(|&yr| yr >= model_freeze_year);
+
+        // Calibrated Weibull epistemic hazard boost: models further past their training freeze
+        // accumulate higher temporal drift risk when evaluating technical/temporal queries.
+        let has_temporal_or_tech_signal = !scan.detected_entities.is_empty()
+            || !scan.temporal_keywords.is_empty()
+            || is_post_freeze_query
+            || !scan.outdated_models_flagged.is_empty();
+
+        let effective_temporal_risk = if has_temporal_or_tech_signal && days_post_freeze > 60 {
+            let delta_days = (days_post_freeze - 60) as f32;
+            let weibull_hazard = 1.0 - (-(delta_days / 365.0).powf(1.35)).exp();
+            let boosted = (scan.temporal_risk_score + 0.25 * weibull_hazard).min(1.0);
+            (boosted * 100.0).round() / 100.0
+        } else {
+            scan.temporal_risk_score
+        };
 
         let requires_grounding = scan.requires_search
             || (scan.is_temporally_sensitive && days_post_freeze > 60)
+            || effective_temporal_risk >= 0.35
             || is_post_freeze_query
             || is_retired;
 
@@ -91,7 +106,7 @@ impl HorizonCalculator {
                 model.display_name,
                 model.estimated_training_freeze.format("%Y-%m-%d"),
                 days_post_freeze,
-                scan.temporal_risk_score,
+                effective_temporal_risk,
             )
         } else {
             format!(
@@ -117,7 +132,7 @@ impl HorizonCalculator {
             days_post_cutoff,
             model.estimated_training_freeze.format("%Y-%m-%d"),
             days_post_freeze,
-            scan.temporal_risk_score,
+            effective_temporal_risk,
             if requires_grounding { "YES" } else { "NO" },
             warning_section
             )
@@ -132,7 +147,7 @@ impl HorizonCalculator {
             training_freeze: model.estimated_training_freeze,
             days_post_cutoff,
             days_post_freeze,
-            temporal_risk_score: scan.temporal_risk_score,
+            temporal_risk_score: effective_temporal_risk,
             is_model_outdated_or_retired: is_retired,
             recommended_replacement,
             outdated_warnings,

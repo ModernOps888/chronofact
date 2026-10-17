@@ -128,12 +128,18 @@ export interface ToolCandidate {
   parameters: string[];
 }
 
+export interface ScoredTool {
+  tool: ToolCandidate;
+  relevance_score: number;
+}
+
 export interface ToolRoutingResult {
   query: string;
-  selected_tools: ToolCandidate[];
+  selected_tools: (ScoredTool | ToolCandidate)[];
   pruned_tools: number;
   tokens_saved: number;
-  cost_reduction_pct: number;
+  savings_percentage?: number;
+  cost_reduction_pct?: number;
   prompt_cache_anchor: string;
 }
 

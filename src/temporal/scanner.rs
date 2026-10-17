@@ -126,22 +126,61 @@ impl TemporalScanner {
             }
         }
 
-        // Factual misattribution check for frontier models across major labs
+        // Factual misattribution check for frontier models across major labs.
+        // Scoped to individual comparison clauses and only triggers when the foreign vendor is NOT paired
+        // with its own model family in the same clause (preventing false positives on "Claude vs OpenAI GPT-6").
         let query_lower = query.to_lowercase();
-        if (query_lower.contains("astra") || query_lower.contains("sol 6") || query_lower.contains("astr 6") || query_lower.contains("sol-6"))
-            && (query_lower.contains("google") || query_lower.contains("deepmind") || query_lower.contains("anthropic") || query_lower.contains("meta") || query_lower.contains("xai"))
-        {
-            let note = "FACTUAL CONTRADICTION WARNING: Astra 6 (GPT-6 Astra) and Sol 6.1 (GPT-6.1 Sol) are OpenAI models (launched Sep 2026), NOT Google DeepMind, Anthropic, Meta, or xAI.".to_string();
-            if !outdated_models_flagged.contains(&note) {
-                outdated_models_flagged.push(note);
+        let clause_normalized = query_lower
+            .replace(" vs. ", " | ")
+            .replace(" vs ", " | ")
+            .replace(" versus ", " | ")
+            .replace(" compared to ", " | ")
+            .replace(" compared with ", " | ")
+            .replace(" against ", " | ")
+            .replace(" while ", " | ")
+            .replace(" whereas ", " | ");
+
+        for clause in clause_normalized.split(|c| c == ',' || c == ';' || c == '\n' || c == '|') {
+            let c = clause.trim();
+            if c.is_empty() {
+                continue;
             }
-        }
-        if (query_lower.contains("claude") || query_lower.contains("opus 5") || query_lower.contains("sonnet 5"))
-            && (query_lower.contains("google") || query_lower.contains("openai") || query_lower.contains("meta"))
-        {
-            let note = "FACTUAL CONTRADICTION WARNING: Claude models (Opus 5.5, Sonnet 5.5) are developed by Anthropic, NOT Google, OpenAI, or Meta.".to_string();
-            if !outdated_models_flagged.contains(&note) {
-                outdated_models_flagged.push(note);
+            let has_openai_frontier =
+                c.contains("astra") || c.contains("sol 6") || c.contains("astr 6") || c.contains("sol-6");
+            let has_claude_frontier =
+                c.contains("claude") || c.contains("opus 5") || c.contains("sonnet 5");
+            let has_gemini_model = c.contains("gemini") || c.contains("argon");
+            let has_grok_model = c.contains("grok");
+            let has_llama_model = c.contains("llama");
+
+            if has_openai_frontier {
+                let foreign_google = (c.contains("google") || c.contains("deepmind")) && !has_gemini_model;
+                let foreign_anthropic = c.contains("anthropic") && !has_claude_frontier;
+                let foreign_meta = c.contains("meta") && !has_llama_model;
+                let foreign_xai = c.contains("xai") && !has_grok_model;
+                if foreign_google || foreign_anthropic || foreign_meta || foreign_xai {
+                    let note = "FACTUAL CONTRADICTION WARNING: Astra 6 (GPT-6 Astra) and Sol 6.1 (GPT-6.1 Sol) are OpenAI models (launched Sep 2026), NOT Google DeepMind, Anthropic, Meta, or xAI.".to_string();
+                    if !outdated_models_flagged.contains(&note) {
+                        outdated_models_flagged.push(note);
+                    }
+                }
+            }
+
+            if has_claude_frontier {
+                let foreign_google = (c.contains("google") || c.contains("deepmind")) && !has_gemini_model;
+                let foreign_openai = c.contains("openai")
+                    && !(has_openai_frontier
+                        || c.contains("gpt")
+                        || c.contains("o1")
+                        || c.contains("o3")
+                        || c.contains("o4"));
+                let foreign_meta = c.contains("meta") && !has_llama_model;
+                if foreign_google || foreign_openai || foreign_meta {
+                    let note = "FACTUAL CONTRADICTION WARNING: Claude models (Opus 5.5, Sonnet 5.5) are developed by Anthropic, NOT Google, OpenAI, or Meta.".to_string();
+                    if !outdated_models_flagged.contains(&note) {
+                        outdated_models_flagged.push(note);
+                    }
+                }
             }
         }
 
@@ -158,10 +197,12 @@ impl TemporalScanner {
             score += 0.50;
         }
 
-        // Recent years boost score (e.g. 2024, 2025, 2026)
+        // Recent years boost score (2025+ strongly boosts; 2024 mildly boosts unless combined with entities/keywords)
         for &yr in &mentioned_years {
-            if yr >= 2024 {
+            if yr >= 2025 {
                 score += 0.35;
+            } else if yr == 2024 {
+                score += 0.15;
             }
         }
 

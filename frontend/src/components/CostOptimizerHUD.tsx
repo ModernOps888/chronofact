@@ -211,7 +211,7 @@ export const CostOptimizerHUD: React.FC<Props> = () => {
             <div className="bg-[#101626] border border-emerald-500/40 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold">
-                  {routeResult.cost_reduction_pct.toFixed(0)}%
+                  {(routeResult.cost_reduction_pct ?? routeResult.savings_percentage ?? 0).toFixed(0)}%
                 </div>
                 <div>
                   <div className="text-sm font-bold text-white font-mono">
@@ -242,23 +242,34 @@ export const CostOptimizerHUD: React.FC<Props> = () => {
                   <span className="text-slate-400 text-[10px]">Ranked by TF-IDF Cosine</span>
                 </div>
                 <div className="space-y-2.5">
-                  {routeResult.selected_tools.map((tool, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-[#121827] border border-amber-500/20 rounded-lg p-3 text-xs font-mono"
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-amber-300 font-bold">{tool.name}</span>
-                        <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-200 text-[10px] rounded">
-                          {tool.category}
-                        </span>
+                  {routeResult.selected_tools.map((entry, idx) => {
+                    const tool = 'tool' in entry ? entry.tool : entry;
+                    const score = 'relevance_score' in entry ? entry.relevance_score : undefined;
+                    return (
+                      <div
+                        key={idx}
+                        className="bg-[#121827] border border-amber-500/20 rounded-lg p-3 text-xs font-mono"
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-amber-300 font-bold">{tool.name}</span>
+                          <div className="flex items-center gap-1.5">
+                            {score !== undefined && (
+                              <span className="text-[10px] text-emerald-400">
+                                {(score * 100).toFixed(0)}% match
+                              </span>
+                            )}
+                            <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-200 text-[10px] rounded">
+                              {tool.category}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="text-slate-400 text-[11px] line-clamp-2">{tool.description}</p>
+                        <div className="mt-2 text-[10px] text-slate-500 flex items-center gap-1">
+                          <span className="text-slate-400">Params:</span> {(tool.parameters ?? []).join(', ')}
+                        </div>
                       </div>
-                      <p className="text-slate-400 text-[11px] line-clamp-2">{tool.description}</p>
-                      <div className="mt-2 text-[10px] text-slate-500 flex items-center gap-1">
-                        <span className="text-slate-400">Params:</span> {tool.parameters.join(', ')}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 

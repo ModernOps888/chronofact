@@ -33,20 +33,24 @@ pub struct MemoryCalibrator;
 
 impl MemoryCalibrator {
     /// Computes an adaptive relative threshold from candidate similarity scores.
-    /// Uses sample mean mu and standard deviation sigma: threshold = max(floor * 0.8, mu + multiplier * sigma)
+    /// Uses sample mean mu and standard deviation sigma: threshold = max(floor, mu + multiplier * sigma)
+    /// For small candidate sets (n <= 3) that already cleared the floor, returns `floor` to prevent
+    /// degenerate variance from cannibalizing valid high-precision matches.
     pub fn calculate_adaptive_threshold(
         scores: &[f32],
         provider: EmbeddingProvider,
         multiplier: f32,
     ) -> f32 {
         let floor = provider.default_floor_threshold();
-        if scores.is_empty() {
+        if scores.len() <= 3 {
             return floor;
         }
 
         let sum: f32 = scores.iter().sum();
         let mean = sum / scores.len() as f32;
 
+        // Bessel-corrected sample variance (n - 1)
+        let denom = ((scores.len() - 1) as f32).max(1.0);
         let variance: f32 = scores
             .iter()
             .map(|s| {
@@ -54,7 +58,7 @@ impl MemoryCalibrator {
                 diff * diff
             })
             .sum::<f32>()
-            / scores.len() as f32;
+            / denom;
 
         let stddev = variance.sqrt();
         let relative_threshold = mean + multiplier * stddev;

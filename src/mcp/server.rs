@@ -3,13 +3,13 @@ use super::tools;
 use crate::cost::{CostTracker, TfidfToolRouter, ToolCandidate, ToolResponseCache};
 use crate::gateway::GatewayMultiplexer;
 use crate::grounding::{ClaimExtractor, FactVerifier};
-use crate::memory::{DriftEvent, MemoryEngine, ProjectEntity};
+use crate::memory::{DriftEvent, EpistemicTrajectory, MemoryEngine, PostTrainingPair, ProjectEntity};
 use crate::research::SearchEngine;
 use crate::security::ContentSanitizer;
 use crate::temporal::{HorizonCalculator, ModelRegistry, TemporalScanner};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 
 use std::collections::HashMap;
@@ -87,7 +87,79 @@ impl McpServer {
         }
     }
 
+    /// Construct an McpServer sharing the exact same AppState instances (tool_cache, cost_tracker,
+    /// memory, router, gateway) as the co-hosted HTTP/SSE Cockpit API server.
+    pub fn from_app_state(state: Arc<crate::proxy::AppState>) -> Self {
+        Self {
+            model_registry: state.model_registry.clone(),
+            scanner: state.temporal_scanner.clone(),
+            searcher: state.search_engine.clone(),
+            extractor: state.claim_extractor.clone(),
+            verifier: state.fact_verifier.clone(),
+            memory: state.memory.clone(),
+            tool_router: state.tool_router.clone(),
+            tool_cache: state.tool_cache.clone(),
+            cost_tracker: state.cost_tracker.clone(),
+            sanitizer: state.sanitizer.clone(),
+            gateway: state.gateway.clone(),
+            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Build native + host ToolCandidates dynamically from `tools::list_tools()` schemas
+    fn native_tool_candidates(include_host_tools: bool) -> Vec<ToolCandidate> {
+        let mut candidates = Vec::new();
+        let tools_val = tools::list_tools();
+        if let Some(arr) = tools_val.get("tools").and_then(|t| t.as_array()) {
+            for item in arr {
+                let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                if name.is_empty() {
+                    continue;
+                }
+                let desc = item.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                let server = if name.starts_with("gateway_") {
+                    "chronofact-gateway"
+                } else {
+                    "chronofact"
+                };
+                let mut params = Vec::new();
+                if let Some(props) = item
+                    .get("inputSchema")
+                    .and_then(|s| s.get("properties"))
+                    .and_then(|p| p.as_object())
+                {
+                    for (key, prop_val) in props {
+                        if let Some(pdesc) = prop_val.get("description").and_then(|d| d.as_str()) {
+                            params.push(format!("{} {}", key, pdesc));
+                        } else {
+                            params.push(key.clone());
+                        }
+                    }
+                }
+                candidates.push(ToolCandidate::new(name, desc, server, params));
+            }
+        }
+
+        if include_host_tools {
+            candidates.extend(vec![
+                ToolCandidate::new("spine_reality_audit", "Audits user prompt against 33 SPINE vertebrae for sycophancy traps, flattery bait, and credential intimidation", "spine", vec!["prompt".into(), "reality_level".into()]),
+                ToolCandidate::new("spine_verify_pushback", "Evaluates aggressive user pushback under Thoracic T1/T4 to block unearned apologies and enforce technical proof", "spine", vec!["challenge_prompt".into(), "prior_assertion_verified".into()]),
+                ToolCandidate::new("spine_adversarial_redteam", "Performs Lumbar/Sacral adversarial architecture red-teaming across scale, security, and failure modes", "spine", vec!["proposal".into(), "target_scale".into()]),
+                ToolCandidate::new("spine_generate_gate_attestation", "Generates a cryptographic HMAC-SHA256 SPINE gate attestation binding reality audit and red-team verdicts", "spine", vec!["project_id".into(), "target_artifact".into()]),
+                ToolCandidate::new("run_command", "Propose a command to run on behalf of the user in PowerShell shell", "antigravity", vec!["CommandLine".into(), "Cwd".into()]),
+                ToolCandidate::new("view_file", "View the contents of a file from the local filesystem", "antigravity", vec!["AbsolutePath".into()]),
+                ToolCandidate::new("replace_file_content", "Use this tool to edit an existing file with single contiguous replacement", "antigravity", vec!["TargetFile".into(), "TargetContent".into(), "ReplacementContent".into()]),
+                ToolCandidate::new("write_to_file", "Use this tool to create new files or overwrite existing files", "antigravity", vec!["TargetFile".into(), "CodeContent".into()]),
+                ToolCandidate::new("search_web", "Performs a web search for a given query and returns summary", "antigravity", vec!["query".into()]),
+                ToolCandidate::new("read_url_content", "Fetch content from a URL via HTTP request", "antigravity", vec!["Url".into()]),
+            ]);
+        }
+
+        candidates
+    }
+
     pub async fn run_stdio(&self) -> io::Result<()> {
+        const MAX_MCP_LINE_BYTES: u64 = 16 * 1024 * 1024;
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin);
         let mut stdout = tokio::io::stdout();
@@ -95,7 +167,7 @@ impl McpServer {
 
         loop {
             buf.clear();
-            let bytes_read = match reader.read_until(b'\n', &mut buf).await {
+            let bytes_read = match (&mut reader).take(MAX_MCP_LINE_BYTES).read_until(b'\n', &mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
                     eprintln!("ChronoFact stdio read error: {}", e);
@@ -334,6 +406,27 @@ impl McpServer {
                 };
                 Some(JsonRpcResponse::success(id, json!({ "prompts": prompts })))
             }
+            "prompts/get" => {
+                let params = req.params.unwrap_or(Value::Null);
+                let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                if name.is_empty() {
+                    return Some(JsonRpcResponse::error(id, -32602, "Missing 'name' parameter"));
+                }
+                let arguments = params.get("arguments").cloned();
+                if let Some(ref gw) = self.gateway {
+                    let gw_guard = gw.read().await;
+                    match gw_guard.get_prompt(name, arguments).await {
+                        Ok(val) => Some(JsonRpcResponse::success(id, val)),
+                        Err(e) => Some(JsonRpcResponse::error(
+                            id,
+                            -32000,
+                            &format!("Failed to get prompt '{}': {}", name, e),
+                        )),
+                    }
+                } else {
+                    Some(JsonRpcResponse::error(id, -32000, "Gateway subsystem not initialized"))
+                }
+            }
             unknown => Some(JsonRpcResponse::error(
                 id,
                 -32601,
@@ -356,9 +449,31 @@ impl McpServer {
                 let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
                 let scan = self.scanner.scan(query);
 
-                // Dynamically detect model from prompt if not specified or if specific model query detected
-                let effective_model_id = if !requested_model_id.is_empty() && requested_model_id != "auto" && requested_model_id != "default" {
+                // Dynamically detect model from prompt if not specified or if specific model query detected.
+                // Prioritizes explicit model_id, then active 2026 models mentioned in comparison/migration queries,
+                // before falling back to flagged outdated models so comparison queries are never hijacked.
+                let q_lower = query.to_lowercase();
+                let effective_model_id = if !requested_model_id.is_empty()
+                    && requested_model_id != "auto"
+                    && requested_model_id != "default"
+                {
                     requested_model_id
+                } else if q_lower.contains("astra") || q_lower.contains("astr-6") || q_lower.contains("astr 6") {
+                    "gpt-6-astra"
+                } else if q_lower.contains("sol-6")
+                    || q_lower.contains("sol 6")
+                    || q_lower.contains("sol-6.1")
+                    || q_lower.contains("sol 6.1")
+                {
+                    "gpt-6-1-sol"
+                } else if q_lower.contains("opus 5") || q_lower.contains("opus-5") {
+                    "claude-opus-5-5"
+                } else if q_lower.contains("sonnet 5") || q_lower.contains("sonnet-5") {
+                    "claude-sonnet-5-5"
+                } else if q_lower.contains("grok 4") || q_lower.contains("grok-4") {
+                    "grok-4-7"
+                } else if q_lower.contains("gemini-4") || q_lower.contains("gemini 4") || q_lower.contains("argon") {
+                    "gemini-4-argon"
                 } else if let Some(flagged) = scan.outdated_models_flagged.first() {
                     let f_lower = flagged.to_lowercase();
                     if f_lower.contains("3.5") || f_lower.contains("3-5") {
@@ -372,33 +487,26 @@ impl McpServer {
                     } else {
                         "claude-opus-5-5"
                     }
+                } else if q_lower.contains("claude-3-5")
+                    || q_lower.contains("claude 3.5")
+                    || q_lower.contains("sonnet 3.5")
+                    || q_lower.contains("sonnet-3-5")
+                {
+                    "claude-3-5-sonnet"
+                } else if q_lower.contains("claude-3-7")
+                    || q_lower.contains("claude 3.7")
+                    || q_lower.contains("sonnet 3.7")
+                    || q_lower.contains("sonnet-3-7")
+                {
+                    "claude-3-7-sonnet"
+                } else if q_lower.contains("grok-3") || q_lower.contains("grok 3") {
+                    "grok-3"
+                } else if q_lower.contains("gpt-4") || q_lower.contains("gpt 4") {
+                    "gpt-4"
+                } else if q_lower.contains("gemini") {
+                    "gemini-3-8-flash"
                 } else {
-                    let q_lower = query.to_lowercase();
-                    if q_lower.contains("claude-3-5") || q_lower.contains("claude 3.5") || q_lower.contains("sonnet 3.5") || q_lower.contains("sonnet-3-5") {
-                        "claude-3-5-sonnet"
-                    } else if q_lower.contains("claude-3-7") || q_lower.contains("claude 3.7") || q_lower.contains("sonnet 3.7") || q_lower.contains("sonnet-3-7") {
-                        "claude-3-7-sonnet"
-                    } else if q_lower.contains("grok-3") || q_lower.contains("grok 3") {
-                        "grok-3"
-                    } else if q_lower.contains("gpt-4") || q_lower.contains("gpt 4") {
-                        "gpt-4"
-                    } else if q_lower.contains("astra") || q_lower.contains("astr-6") || q_lower.contains("astr 6") {
-                        "gpt-6-astra"
-                    } else if q_lower.contains("sol-6") || q_lower.contains("sol 6") || q_lower.contains("sol-6.1") || q_lower.contains("sol 6.1") {
-                        "gpt-6-1-sol"
-                    } else if q_lower.contains("opus 5") || q_lower.contains("opus-5") {
-                        "claude-opus-5-5"
-                    } else if q_lower.contains("sonnet 5") || q_lower.contains("sonnet-5") {
-                        "claude-sonnet-5-5"
-                    } else if q_lower.contains("grok 4") || q_lower.contains("grok-4") {
-                        "grok-4-7"
-                    } else if q_lower.contains("gemini-4") || q_lower.contains("gemini 4") || q_lower.contains("argon") {
-                        "gemini-4-argon"
-                    } else if q_lower.contains("gemini") {
-                        "gemini-3-8-flash"
-                    } else {
-                        "claude-opus-5-5"
-                    }
+                    "claude-opus-5-5"
                 };
 
                 let model = self.model_registry.lookup(effective_model_id);
@@ -541,35 +649,39 @@ impl McpServer {
                         }
                     }
                     if report.total_claims > 0 {
-                        let risk = ((report.contradicted_count as f32 * 1.0)
+                        let linear_risk = ((report.contradicted_count as f32 * 1.0)
                             + (report.unverified_count as f32 * 0.4))
                             / (report.total_claims as f32);
-                        report.hallucination_risk_index = risk.min(1.0);
+                        let noisy_or_floor = if report.contradicted_count > 0 {
+                            1.0 - (1.0 - 0.38_f32).powi(report.contradicted_count as i32)
+                        } else {
+                            0.0
+                        };
+                        report.hallucination_risk_index =
+                            ((linear_risk.max(noisy_or_floor).min(1.0)) * 100.0).round() / 100.0;
                     }
                 }
 
-                let snippet = if response_text.chars().count() > 90 {
-                    format!("{}...", response_text.chars().take(90).collect::<String>())
+                let now_ts = chrono::Utc::now().to_rfc3339();
+                let intervention = if report.contradicted_count > 0 {
+                    "CONTRADICTION_INTERCEPTED".to_string()
                 } else {
-                    response_text.to_string()
+                    "CLAIM_VERIFICATION".to_string()
                 };
+
                 let drift_event = DriftEvent {
                     id: 0,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    timestamp: now_ts.clone(),
                     project_id: "antigravity-ide".to_string(),
                     model_id: "claim-verifier".to_string(),
-                    query: snippet,
+                    query: response_text.to_string(),
                     days_post_freeze: 0,
                     temporal_risk_score: report.hallucination_risk_index,
                     outdated_topics_caught: format!(
                         "Audited {} claims (Entailed: {}, Contradicted: {}, Unverified: {})",
                         report.total_claims, report.entailed_count, report.contradicted_count, report.unverified_count
                     ),
-                    intervention_type: if report.contradicted_count > 0 {
-                        "CONTRADICTION_INTERCEPTED".to_string()
-                    } else {
-                        "CLAIM_VERIFICATION".to_string()
-                    },
+                    intervention_type: intervention.clone(),
                     ground_truth_retrieved: if report.contradicted_count > 0 {
                         format!("CONTRADICTION DETECTED: Hallucination risk {:.0}%", report.hallucination_risk_index * 100.0)
                     } else {
@@ -577,6 +689,84 @@ impl McpServer {
                     },
                 };
                 let _ = self.memory.record_drift_event(&drift_event);
+
+                // Persist full untruncated EpistemicTrajectory and KTO post-training pairs
+                let verified_vec: Vec<_> = report
+                    .claims
+                    .iter()
+                    .filter(|c| c.status == crate::grounding::VerificationStatus::Entailed)
+                    .collect();
+                let contradicted_vec: Vec<_> = report
+                    .claims
+                    .iter()
+                    .filter(|c| c.status == crate::grounding::VerificationStatus::Contradicted)
+                    .collect();
+                let unverified_vec: Vec<_> = report
+                    .claims
+                    .iter()
+                    .filter(|c| c.status == crate::grounding::VerificationStatus::Unverified)
+                    .collect();
+
+                let trajectory = EpistemicTrajectory {
+                    id: 0,
+                    timestamp: now_ts.clone(),
+                    project_id: "antigravity-ide".to_string(),
+                    model_id: "claim-verifier".to_string(),
+                    query: response_text.to_string(),
+                    draft_response: response_text.to_string(),
+                    verified_claims_json: serde_json::to_string(&verified_vec).unwrap_or_else(|_| "[]".to_string()),
+                    contradicted_claims_json: serde_json::to_string(&contradicted_vec).unwrap_or_else(|_| "[]".to_string()),
+                    unverified_claims_json: serde_json::to_string(&unverified_vec).unwrap_or_else(|_| "[]".to_string()),
+                    source_evidence_json: serde_json::to_string(&sources).unwrap_or_else(|_| "[]".to_string()),
+                    hallucination_risk_index: report.hallucination_risk_index,
+                    intervention_type: intervention,
+                };
+                let _ = self.memory.record_epistemic_trajectory(&trajectory);
+
+                let evidence_summary = sources
+                    .iter()
+                    .map(|s| format!("[{}] {}: {}", s.id, s.title, s.content))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for vc in &report.claims {
+                    match vc.status {
+                        crate::grounding::VerificationStatus::Entailed => {
+                            let _ = self.memory.record_post_training_pair(&PostTrainingPair {
+                                id: 0,
+                                timestamp: now_ts.clone(),
+                                project_id: "antigravity-ide".to_string(),
+                                prompt: response_text.to_string(),
+                                response: vc.claim.statement.clone(),
+                                label: "desirable".to_string(),
+                                kto_weight: 1.0,
+                                source_evidence: if evidence_summary.is_empty() {
+                                    vc.rationale.clone()
+                                } else {
+                                    evidence_summary.clone()
+                                },
+                                reward_score: vc.confidence_score,
+                            });
+                        }
+                        crate::grounding::VerificationStatus::Contradicted => {
+                            let _ = self.memory.record_post_training_pair(&PostTrainingPair {
+                                id: 0,
+                                timestamp: now_ts.clone(),
+                                project_id: "antigravity-ide".to_string(),
+                                prompt: response_text.to_string(),
+                                response: vc.claim.statement.clone(),
+                                label: "undesirable".to_string(),
+                                kto_weight: 2.25, // Kahneman-Tversky loss-aversion multiplier for hallucinations
+                                source_evidence: if evidence_summary.is_empty() {
+                                    vc.rationale.clone()
+                                } else {
+                                    evidence_summary.clone()
+                                },
+                                reward_score: -1.0,
+                            });
+                        }
+                        crate::grounding::VerificationStatus::Unverified => {}
+                    }
+                }
 
                 Ok(json!(report))
             }
@@ -668,13 +858,14 @@ impl McpServer {
                 };
                 let _ = self.memory.record_drift_event(&drift_event);
 
-                let cache_optimized = CostTracker::build_cache_isolated_prompt(
+                let cache_optimized = CostTracker::assemble_cache_aligned_prompt_with_mode(
                     project_id,
                     &dossier.dossier_markdown,
                     "",
                     &horizon.calibration_block,
                     &sources.iter().map(|s| format!("{}: {}", s.title, s.content)).collect::<Vec<_>>().join("\n"),
                     query,
+                    crate::cost::tracker::SessionMode::StatelessSingleShot,
                 );
 
                 Ok(json!({
@@ -691,31 +882,7 @@ impl McpServer {
                 let query = args.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
                 let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
 
-                let mut candidate_tools = vec![
-                    ToolCandidate::new("chronofact_temporal_check", "Examines a query against a model's knowledge cutoff and estimated training freeze date", "chronofact", vec!["model_id".into(), "query".into()]),
-                    ToolCandidate::new("chronofact_ground_query", "Performs real-time web retrieval, validates URLs against SSRF, and sanitizes untrusted content", "chronofact", vec!["query".into(), "max_results".into()]),
-                    ToolCandidate::new("chronofact_verify_claims", "Decomposes a text response into atomic propositions and checks each against retrieved source evidence", "chronofact", vec!["response_text".into(), "sources".into()]),
-                    ToolCandidate::new("chronofact_memory_save", "Persists an architectural invariant, tech stack version, or project rule into L3 semantic memory", "chronofact", vec!["project_id".into(), "entity_name".into(), "definition".into()]),
-                    ToolCandidate::new("chronofact_memory_dossier", "Retrieves the persistent Project Truth Dossier with Zero-Pollution Guard", "chronofact", vec!["project_id".into(), "query".into()]),
-                    ToolCandidate::new("chronofact_cost_optimize", "Filters available tools to top-k relevant tools using TF-IDF routing to save tokens", "chronofact", vec!["query".into(), "top_k".into()]),
-                    ToolCandidate::new("chronofact_cost_metrics", "Returns real-time token savings, prompt cache hit rate, and estimated USD cost saved across the session", "chronofact", vec![]),
-                    ToolCandidate::new("chronofact_verify_code_invariants", "Performs enterprise architectural and security invariant audits on source code, PR diffs, or manifests", "chronofact", vec!["file_path".into(), "content".into()]),
-                    ToolCandidate::new("chronofact_attestation_generate", "Generates a cryptographically signed Invariant Attestation certificate binding code content and temporal anchor", "chronofact", vec!["project_id".into(), "file_path".into(), "content".into()]),
-                    ToolCandidate::new("chronofact_expand_tool_palette", "Recovers and injects additional tool schemas on demand during multi-step execution", "chronofact", vec!["query_or_category".into(), "top_k".into()]),
-                    ToolCandidate::new("gateway_find_tools", "Search across all upstream servers and native tools via TF-IDF", "chronofact-gateway", vec!["query".into(), "top_k".into()]),
-                    ToolCandidate::new("gateway_call_tool", "Execute tool on multiplexed upstream server with security and anti-hallucination verification", "chronofact-gateway", vec!["name".into(), "arguments".into()]),
-                    ToolCandidate::new("gateway_list_servers", "Lists all connected upstream MCP servers and health", "chronofact-gateway", vec![]),
-                    ToolCandidate::new("spine_reality_audit", "Audits user prompt against 33 SPINE vertebrae for sycophancy traps, flattery bait, and credential intimidation", "spine", vec!["prompt".into(), "reality_level".into()]),
-                    ToolCandidate::new("spine_verify_pushback", "Evaluates aggressive user pushback under Thoracic T1/T4 to block unearned apologies and enforce technical proof", "spine", vec!["challenge_prompt".into(), "prior_assertion_verified".into()]),
-                    ToolCandidate::new("spine_adversarial_redteam", "Performs Lumbar/Sacral adversarial architecture red-teaming across scale, security, and failure modes", "spine", vec!["proposal".into(), "target_scale".into()]),
-                    ToolCandidate::new("spine_generate_gate_attestation", "Generates a cryptographic HMAC-SHA256 SPINE gate attestation binding reality audit and red-team verdicts", "spine", vec!["project_id".into(), "target_artifact".into()]),
-                    ToolCandidate::new("run_command", "Propose a command to run on behalf of the user in PowerShell shell", "antigravity", vec!["CommandLine".into(), "Cwd".into()]),
-                    ToolCandidate::new("view_file", "View the contents of a file from the local filesystem", "antigravity", vec!["AbsolutePath".into()]),
-                    ToolCandidate::new("replace_file_content", "Use this tool to edit an existing file with single contiguous replacement", "antigravity", vec!["TargetFile".into(), "TargetContent".into(), "ReplacementContent".into()]),
-                    ToolCandidate::new("write_to_file", "Use this tool to create new files or overwrite existing files", "antigravity", vec!["TargetFile".into(), "CodeContent".into()]),
-                    ToolCandidate::new("search_web", "Performs a web search for a given query and returns summary", "antigravity", vec!["query".into()]),
-                    ToolCandidate::new("read_url_content", "Fetch content from a URL via HTTP request", "antigravity", vec!["Url".into()]),
-                ];
+                let mut candidate_tools = Self::native_tool_candidates(true);
 
                 if let Some(ref gw) = self.gateway {
                     let gw_guard = gw.read().await;
@@ -723,16 +890,22 @@ impl McpServer {
                 }
 
                 let routing = self.tool_router.route(query, &candidate_tools, top_k, None);
+                self.cost_tracker.record_savings(routing.pruned_tools, routing.tokens_saved);
+                let cost_usd = (routing.tokens_saved as f64 * 0.000003 * 10000.0).round() / 10000.0;
+                let _ = self
+                    .memory
+                    .record_cost_event(query, routing.pruned_tools, routing.tokens_saved, cost_usd);
 
                 let cache_prefix = CostTracker::generate_cache_aligned_prefix("antigravity-ide");
                 let schemas_json = serde_json::to_string_pretty(&routing.selected_tools).unwrap_or_default();
-                let cache_optimized = CostTracker::build_cache_isolated_prompt(
+                let cache_optimized = CostTracker::assemble_cache_aligned_prompt_with_mode(
                     "antigravity-ide",
                     "You are an expert AI assistant operating under ChronoFact + SPINE invariants.",
                     &schemas_json,
                     "",
                     "",
                     query,
+                    crate::cost::tracker::SessionMode::StatelessSingleShot,
                 );
 
                 Ok(json!({
@@ -743,7 +916,7 @@ impl McpServer {
                         "tokens_saved": routing.tokens_saved,
                         "savings_percentage": routing.savings_percentage,
                         "basis": "Full ChronoFact + SPINE + Antigravity + connected Gateway candidate pool",
-                        "recorded_to_ledger": false
+                        "recorded_to_ledger": true
                     }
                 }))
             }
@@ -757,17 +930,7 @@ impl McpServer {
                 let query = args.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
                 let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
 
-                let mut all_candidates = vec![
-                    ToolCandidate::new("chronofact_temporal_check", "Examines a query against a model's knowledge cutoff and estimated training freeze date", "chronofact", vec!["model_id".into(), "query".into()]),
-                    ToolCandidate::new("chronofact_ground_query", "Performs real-time web retrieval, validates URLs against SSRF, and sanitizes untrusted content", "chronofact", vec!["query".into(), "max_results".into()]),
-                    ToolCandidate::new("chronofact_verify_claims", "Decomposes a text response into atomic propositions and checks each against retrieved source evidence", "chronofact", vec!["response_text".into(), "sources".into()]),
-                    ToolCandidate::new("chronofact_memory_save", "Persists an architectural invariant, tech stack version, or project rule into L3 semantic memory", "chronofact", vec!["project_id".into(), "entity_name".into(), "definition".into()]),
-                    ToolCandidate::new("chronofact_memory_dossier", "Retrieves the persistent Project Truth Dossier with Zero-Pollution Guard", "chronofact", vec!["project_id".into(), "query".into()]),
-                    ToolCandidate::new("chronofact_cost_optimize", "Filters available tools to top-k relevant tools using TF-IDF routing to save tokens", "chronofact", vec!["query".into(), "top_k".into()]),
-                    ToolCandidate::new("gateway_find_tools", "Search across all upstream servers and native tools via TF-IDF", "chronofact-gateway", vec!["query".into(), "top_k".into()]),
-                    ToolCandidate::new("gateway_call_tool", "Execute tool on multiplexed upstream server with security and anti-hallucination verification", "chronofact-gateway", vec!["name".into(), "arguments".into()]),
-                    ToolCandidate::new("gateway_list_servers", "Lists all connected upstream MCP servers and health", "chronofact-gateway", vec![]),
-                ];
+                let mut all_candidates = Self::native_tool_candidates(false);
 
                 if let Some(ref gw) = self.gateway {
                     let gw_guard = gw.read().await;
@@ -776,6 +939,10 @@ impl McpServer {
 
                 let routing = self.tool_router.route(query, &all_candidates, top_k, None);
                 self.cost_tracker.record_savings(routing.pruned_tools, routing.tokens_saved);
+                let cost_usd = (routing.tokens_saved as f64 * 0.000003 * 10000.0).round() / 10000.0;
+                let _ = self
+                    .memory
+                    .record_cost_event(query, routing.pruned_tools, routing.tokens_saved, cost_usd);
 
                 Ok(json!({
                     "query": query,
@@ -819,6 +986,46 @@ impl McpServer {
 
                 let checker = crate::grounding::CodeInvariantChecker::new();
                 let report = checker.audit_code(file_path, content, custom_rules.as_deref());
+
+                let now_ts = chrono::Utc::now().to_rfc3339();
+                let hri = if report.violations_count > 0 {
+                    (1.0 - (1.0 - 0.38_f32).powi(report.violations_count as i32)).min(1.0)
+                } else {
+                    0.0
+                };
+                let _ = self.memory.record_epistemic_trajectory(&EpistemicTrajectory {
+                    id: 0,
+                    timestamp: now_ts.clone(),
+                    project_id: "antigravity-ide".to_string(),
+                    model_id: "code-invariant-gate".to_string(),
+                    query: file_path.to_string(),
+                    draft_response: content.to_string(),
+                    verified_claims_json: "[]".to_string(),
+                    contradicted_claims_json: serde_json::to_string(&report.violations).unwrap_or_else(|_| "[]".to_string()),
+                    unverified_claims_json: "[]".to_string(),
+                    source_evidence_json: "[]".to_string(),
+                    hallucination_risk_index: hri,
+                    intervention_type: if report.violations_count > 0 {
+                        "CODE_INVARIANT_VIOLATION".to_string()
+                    } else {
+                        "CODE_INVARIANT_VERIFIED".to_string()
+                    },
+                });
+                let _ = self.memory.record_post_training_pair(&PostTrainingPair {
+                    id: 0,
+                    timestamp: now_ts,
+                    project_id: "antigravity-ide".to_string(),
+                    prompt: format!("Audit code invariants for {}", file_path),
+                    response: content.to_string(),
+                    label: if report.violations_count > 0 {
+                        "undesirable".to_string()
+                    } else {
+                        "desirable".to_string()
+                    },
+                    kto_weight: if report.violations_count > 0 { 2.25 } else { 1.0 },
+                    source_evidence: serde_json::to_string(&report.violations).unwrap_or_else(|_| "[]".to_string()),
+                    reward_score: if report.violations_count > 0 { -1.0 } else { 1.0 },
+                });
 
                 Ok(json!(report))
             }
@@ -866,27 +1073,7 @@ impl McpServer {
                     .ok_or("Missing 'query_or_category'")?;
                 let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
 
-                let mut all_candidates = vec![
-                    ToolCandidate::new("chronofact_temporal_check", "Examines a query against a model's knowledge cutoff and estimated training freeze date", "chronofact", vec!["model_id".into(), "query".into()]),
-                    ToolCandidate::new("chronofact_ground_query", "Performs real-time web retrieval, validates URLs against SSRF, and sanitizes untrusted content", "chronofact", vec!["query".into(), "max_results".into()]),
-                    ToolCandidate::new("chronofact_verify_claims", "Decomposes a text response into atomic propositions and checks each against retrieved source evidence", "chronofact", vec!["response_text".into(), "sources".into()]),
-                    ToolCandidate::new("chronofact_memory_save", "Persists an architectural invariant, tech stack version, or project rule into L3 semantic memory", "chronofact", vec!["project_id".into(), "entity_name".into(), "definition".into()]),
-                    ToolCandidate::new("chronofact_memory_dossier", "Retrieves the persistent Project Truth Dossier with Zero-Pollution Guard", "chronofact", vec!["project_id".into(), "query".into()]),
-                    ToolCandidate::new("chronofact_cost_optimize", "Filters available tools to top-k relevant tools using TF-IDF routing to save tokens", "chronofact", vec!["query".into(), "top_k".into()]),
-                    ToolCandidate::new("chronofact_cost_metrics", "Returns real-time token savings, prompt cache hit rate, and estimated USD cost saved across the session", "chronofact", vec![]),
-                    ToolCandidate::new("chronofact_verify_code_invariants", "Performs enterprise architectural and security invariant audits on source code, PR diffs, or manifests", "chronofact", vec!["file_path".into(), "content".into()]),
-                    ToolCandidate::new("chronofact_attestation_generate", "Generates a cryptographically signed Invariant Attestation certificate binding code content and temporal anchor", "chronofact", vec!["project_id".into(), "file_path".into(), "content".into()]),
-                    ToolCandidate::new("chronofact_expand_tool_palette", "Recovers and injects additional tool schemas on demand during multi-step execution", "chronofact", vec!["query_or_category".into(), "top_k".into()]),
-                    ToolCandidate::new("gateway_find_tools", "Search across all upstream servers and native tools via TF-IDF", "chronofact-gateway", vec!["query".into(), "top_k".into()]),
-                    ToolCandidate::new("gateway_call_tool", "Execute tool on multiplexed upstream server with security and anti-hallucination verification", "chronofact-gateway", vec!["name".into(), "arguments".into()]),
-                    ToolCandidate::new("gateway_list_servers", "Lists all connected upstream MCP servers and health", "chronofact-gateway", vec![]),
-                    ToolCandidate::new("run_command", "Propose a command to run on behalf of the user in PowerShell shell", "antigravity", vec!["CommandLine".into(), "Cwd".into()]),
-                    ToolCandidate::new("view_file", "View the contents of a file from the local filesystem", "antigravity", vec!["AbsolutePath".into()]),
-                    ToolCandidate::new("replace_file_content", "Use this tool to edit an existing file with single contiguous replacement", "antigravity", vec!["TargetFile".into(), "TargetContent".into(), "ReplacementContent".into()]),
-                    ToolCandidate::new("write_to_file", "Use this tool to create new files or overwrite existing files", "antigravity", vec!["TargetFile".into(), "CodeContent".into()]),
-                    ToolCandidate::new("search_web", "Performs a web search for a given query and returns summary", "antigravity", vec!["query".into()]),
-                    ToolCandidate::new("read_url_content", "Fetch content from a URL via HTTP request", "antigravity", vec!["Url".into()]),
-                ];
+                let mut all_candidates = Self::native_tool_candidates(true);
 
                 if let Some(ref gw) = self.gateway {
                     let gw_guard = gw.read().await;
@@ -1005,7 +1192,20 @@ impl McpServer {
                 res
             }
             Ok(Err(e)) => {
-                return Err(format!("Upstream tool execution error: {}", e));
+                let err_str = e.to_string();
+                let err_lower = err_str.to_lowercase();
+                if err_lower.contains("timed out") || err_lower.contains("timeout") {
+                    let mut cb_guard = self.circuit_breakers.write().await;
+                    let cb = cb_guard.entry(server_name.clone()).or_default();
+                    let tripped = cb.record_timeout(3);
+                    if tripped {
+                        return Err(format!(
+                            "Upstream tool execution timed out ({}). Circuit breaker TRIPPED for server '{}' (3 consecutive timeouts).",
+                            err_str, server_name
+                        ));
+                    }
+                }
+                return Err(format!("Upstream tool execution error: {}", err_str));
             }
             Err(_) => {
                 let mut cb_guard = self.circuit_breakers.write().await;

@@ -28,8 +28,9 @@ pub use grounding::{
 };
 pub use mcp::McpServer;
 pub use memory::{
-    is_memory_relevant, DriftEvent, EmbeddingProfile, EmbeddingProvider, MemoryCalibrator,
-    MemoryEngine, ProjectDossier, ProjectEntity, SessionEvent, SessionSummary,
+    is_memory_relevant, DriftEvent, EmbeddingProfile, EmbeddingProvider, EpistemicTrajectory,
+    MemoryCalibrator, MemoryEngine, PostTrainingPair, ProjectDossier, ProjectEntity, SessionEvent,
+    SessionSummary,
 };
 
 pub use proxy::{ApiServer, AppState};

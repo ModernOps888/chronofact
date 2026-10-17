@@ -7,12 +7,14 @@ pub mod l3_graph;
 pub use calibrator::{is_memory_relevant, EmbeddingProfile, EmbeddingProvider, MemoryCalibrator};
 pub use dossier::{DossierCompiler, ProjectDossier};
 pub use l1_buffer::{ChatMessage, WorkingBuffer};
-pub use l2_ledger::{DriftEvent, EpisodicLedger, SessionEvent, SessionSummary};
+pub use l2_ledger::{
+    DriftEvent, EpisodicLedger, EpistemicTrajectory, PostTrainingPair, SessionEvent, SessionSummary,
+};
 pub use l3_graph::{EntityRelation, ProjectEntity, ProjectGraphView, SemanticEntityGraph};
 
 use rusqlite::Connection;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Clone)]
 pub struct MemoryEngine {
@@ -128,6 +130,34 @@ impl MemoryEngine {
         })
     }
 
+    pub fn record_epistemic_trajectory(&self, traj: &EpistemicTrajectory) -> Result<i64, rusqlite::Error> {
+        with_busy_retry(|| {
+            let conn = self.get_conn();
+            EpisodicLedger::record_epistemic_trajectory(&conn, traj)
+        })
+    }
+
+    pub fn get_epistemic_trajectories(&self, limit: usize) -> Result<Vec<EpistemicTrajectory>, rusqlite::Error> {
+        with_busy_retry(|| {
+            let conn = self.get_conn();
+            EpisodicLedger::get_recent_epistemic_trajectories(&conn, limit)
+        })
+    }
+
+    pub fn record_post_training_pair(&self, pair: &PostTrainingPair) -> Result<i64, rusqlite::Error> {
+        with_busy_retry(|| {
+            let conn = self.get_conn();
+            EpisodicLedger::record_post_training_pair(&conn, pair)
+        })
+    }
+
+    pub fn get_post_training_pairs(&self, limit: usize) -> Result<Vec<PostTrainingPair>, rusqlite::Error> {
+        with_busy_retry(|| {
+            let conn = self.get_conn();
+            EpisodicLedger::get_post_training_pairs(&conn, limit)
+        })
+    }
+
     pub fn record_cost_event(
         &self,
         query: &str,
@@ -159,6 +189,7 @@ where
     const BASE_BACKOFF_MS: u64 = 20;
 
     let mut attempt = 0;
+    let wait_cell = (Mutex::new(()), Condvar::new());
     loop {
         match op() {
             Ok(val) => return Ok(val),
@@ -173,8 +204,12 @@ where
 
                 if is_busy && attempt < MAX_RETRIES {
                     attempt += 1;
-                    let sleep_ms = BASE_BACKOFF_MS * (1 << (attempt - 1));
-                    std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+                    let backoff_ms = BASE_BACKOFF_MS * (1 << (attempt - 1));
+                    if let Ok(guard) = wait_cell.0.lock() {
+                        let _ = wait_cell
+                            .1
+                            .wait_timeout(guard, std::time::Duration::from_millis(backoff_ms));
+                    }
                 } else {
                     return Err(e);
                 }

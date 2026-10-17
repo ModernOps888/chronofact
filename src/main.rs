@@ -116,12 +116,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 cost_tracker: Arc::new(CostTracker::default()),
                 gateway: Some(gateway.clone()),
             });
-            let bg_server = ApiServer::new(state, config.port);
+            let bg_server = ApiServer::new(state.clone(), config.port);
             tokio::spawn(async move {
                 bg_server.try_run_background().await;
             });
 
-            let mcp_server = McpServer::with_gateway(memory, Some(gateway));
+            let mcp_server = McpServer::from_app_state(state);
             mcp_server.run_stdio().await?;
         }
         Commands::Check { model, query } => {

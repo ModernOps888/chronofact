@@ -106,6 +106,29 @@ pub struct PackageMetadata {
 }
 
 impl PackageMetadata {
+    fn is_safe_metadata_url(raw_url: &str) -> bool {
+        match crate::security::SecurityValidator::validate_outbound_url(raw_url) {
+            Ok(_) => true,
+            Err(crate::security::SecurityError::InvalidUrl(msg))
+                if msg.starts_with("DNS resolution failed:") =>
+            {
+                if let Ok(parsed) = url::Url::parse(raw_url) {
+                    matches!(parsed.scheme(), "http" | "https")
+                        && matches!(parsed.host(), Some(url::Host::Domain(d)) if {
+                            let dl = d.trim_end_matches('.').to_lowercase();
+                            dl != "localhost"
+                                && !dl.ends_with(".local")
+                                && !dl.ends_with(".internal")
+                                && dl.contains('.')
+                        })
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
     pub fn to_source_chunk(&self) -> SourceChunk {
         let mut content = format!(
             "Package: {}\nEcosystem: {}\nLatest Verified Version: {}\nDescription: {}\n",
@@ -121,18 +144,19 @@ impl PackageMetadata {
         if let Some(ref dep) = self.deprecated {
             content.push_str(&format!("DEPRECATION STATUS: WARNING - Deprecated: {}\n", dep));
         }
-        if let Some(ref repo) = self.repository {
+        if let Some(ref repo) = self.repository.as_ref().filter(|u| Self::is_safe_metadata_url(u)) {
             content.push_str(&format!("Repository: {}\n", repo));
         }
-        if let Some(ref docs) = self.documentation {
+        if let Some(ref docs) = self.documentation.as_ref().filter(|u| Self::is_safe_metadata_url(u)) {
             content.push_str(&format!("Documentation: {}\n", docs));
         }
 
         let url = self
             .documentation
             .clone()
-            .or_else(|| self.homepage.clone())
-            .or_else(|| self.repository.clone())
+            .filter(|u| Self::is_safe_metadata_url(u))
+            .or_else(|| self.homepage.clone().filter(|u| Self::is_safe_metadata_url(u)))
+            .or_else(|| self.repository.clone().filter(|u| Self::is_safe_metadata_url(u)))
             .unwrap_or_else(|| match self.ecosystem.as_str() {
                 "crates.io" => format!("https://crates.io/crates/{}", self.name),
                 "npm" => format!("https://www.npmjs.com/package/{}", self.name),

@@ -207,6 +207,7 @@ impl ToolResponseCache {
         let associated_server = tool_name
             .split_once("__")
             .or_else(|| tool_name.split_once(':'))
+            .or_else(|| tool_name.split_once('/'))
             .map(|(srv, _)| srv.to_string());
 
         if let Ok(mut entries) = self.entries.write() {

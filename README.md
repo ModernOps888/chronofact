@@ -2,7 +2,7 @@
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 104/104 Passed](https://img.shields.io/badge/ci%20tests-104%2F104%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 115/115 Passed](https://img.shields.io/badge/ci%20tests-115%2F115%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 [![Enterprise-Audits](https://img.shields.io/badge/Enterprise-Security_Audits-ff00e5.svg)](https://infinitytechstack.uk/consulting)
@@ -55,23 +55,26 @@ Large Language Models deployed in agentic environments suffer from four critical
 
 ## 🔬 In-Depth Pillar Specifications
 
-### 🕒 Pillar 1: Dynamic Temporal Horizon Calibration
+### 🕒 Pillar 1: Dynamic Temporal Horizon Calibration & Weibull Hazard Modeling
 * **Pre-Release Freeze Margin Tracking**:
   - LLMs have an **official knowledge cutoff** and an **actual weight freeze date** (typically 3-6 months earlier).
   - *Configurable Policy Templates*: Google DeepMind **Gemini 4 Argon** (`gemini-4-argon` / `google/gemini-4-argon`, Release: `2026-10-01`, Freeze: `2026-07-15`, Cutoff: `2026-08-01`), Gemini 3.8 Pro/Flash, OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-04-01`), Sol 6.1 (Freeze: `2026-03-15`, Cutoff: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), xAI Grok 4.7, Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`).
   - *Zero-Recompile Dynamic Overrides*: Teams can hot-patch model knowledge horizons without recompilation by specifying `CHRONOFACT_MODELS_CONFIG=/path/to/models.json` or inline `CHRONOFACT_MODELS_JSON='{...}'`.
-* **Rust `TemporalScanner`**:
-  - Automatically identifies temporal references, semantic year markers, library major versions, and fast-moving entities.
-  - Computes `days_post_freeze` and `temporal_risk_score ∈ [0.0, 1.0]`.
+* **Rust `TemporalScanner` & Clause-Scoped Vendor Attribution**:
+  - Automatically identifies temporal references, semantic year markers (`2025+` vs `2024` graduated weighting), library major versions, and fast-moving entities.
+  - **Clause-Scoped Multi-Vendor Attribution Guard**: Splits compound comparison prompts (`vs`, `versus`, `compared to`, `,`, `;`) into independent clauses so legitimate cross-vendor comparisons (*"Compare Claude Sonnet 5.5 vs OpenAI GPT-6 Astra"*) never trigger false vendor misattribution warnings or hijack `effective_model_id`.
+  - **Weibull Epistemic Hazard Calibration**: Incorporates a calibrated Weibull hazard boost for `days_post_freeze > 60` when temporal or fast-moving software signals are detected, computing `temporal_risk_score ∈ [0.0, 1.0]`.
   - When `risk ≥ 0.35`, the engine triggers real-time grounded web retrieval and injects an un-jammable `<chronofact_temporal_anchor>` system header.
 
-### 🛡️ Pillar 2: Active Claim Extraction, Pre-NLI Invariant Cascade & Enterprise Gating
+### 🛡️ Pillar 2: Active Claim Extraction, Parametric `NeuralNliCalibrator` & Enterprise Gating
 * **Atomic Claim Deconstruction**:
   - Model outputs are split into atomic assertions categorized into `TechnicalApi`, `VersionCompatibility`, `TemporalEvent`, or `FactualAssertion`.
-* **Pre-NLI Invariant Rule Cascade (<0.15ms)**:
-  - Propositional truth is audited against retrieved evidence using token-overlap, negation detection, and configurable policy invariant cascades. Transparently reported as `Deterministic Lexical & Invariant Rule Engine (Pre-NLI Invariant Cascade)`.
-* **`CodeInvariantChecker` (Enterprise Policy Engine)**:
-  - Audits source code, PR diffs, and configuration manifests against 7 non-negotiable enterprise security and architectural invariants:
+* **Pre-NLI Invariant Cascade & `NeuralNliCalibrator` (<0.15ms)**:
+  - **Word-Boundary IDF-Weighted Matching**: Evaluates token overlap using strict word boundaries + 5-character stem matching and protects singular `-s` technical nouns (`postgres`, `redis`, `kubernetes`, `status`, `serverless`) while normalizing 4-letter (`apis` $\to$ `api`) and `-ies` (`policies` $\to$ `policy`) plurals.
+  - **Numeric / Port / Version Conflict Detector & Litotes Guard**: Automatically flags `Contradicted` when overlapping clauses assert conflicting numeric values (e.g. `port 9999` vs `port 5432`) and properly resolves double-negation/litotes (`"never fails to preserve"` $\models$ `"preserves"`).
+  - **Temperature-Scaled `NeuralNliCalibrator` & Noisy-OR Contradiction Floor**: Computes calibrated entailment probabilities via temperature-scaled logistic inference ($T^* = 0.85$) and enforces a non-dilutable Noisy-OR contradiction floor ($1 - (1 - 0.38)^k$) on `hallucination_risk_index` so padding with true claims cannot mask a contradiction.
+* **`CodeInvariantChecker` (12-Rule `OnceLock` Pre-Compiled Enterprise Policy Engine)**:
+  - Audits source code, PR diffs, and configuration manifests across Rust, TypeScript/React, Python, Go, C/C++, SQL, and PowerShell using $O(1)$ `OnceLock`-cached regex automatons:
     1. `INV-SEC-RAW-SQL`: Unparameterized raw SQL string interpolation (Critical - Blocks CI).
     2. `INV-SEC-EVAL-EXEC`: Dynamic code execution / dangerous HTML injection (Critical - Blocks CI).
     3. `INV-SEC-HARDCODED-SECRET`: Raw bearer tokens, private keys, API secrets (Critical - Blocks CI).
@@ -79,46 +82,48 @@ Large Language Models deployed in agentic environments suffer from four critical
     5. `INV-TEMP-DEPRECATED-LIB`: Deprecated/EOL dependencies or hardcoded retired AI model identifiers (High).
     6. `INV-SEC-SSRF-UNCHECKED`: Unvalidated external URL dispatch (Medium).
     7. `INV-ERR-SILENT-FAIL`: Silent error swallowing / empty catch blocks (Medium).
+    8. `INV-REL-ASYNC-BLOCKING`: Blocking thread sleeps inside async execution paths (High).
 * **Cryptographic Attestation Engine (`AttestationEngine`)**:
   - Generates verifiable SHA-256 HMAC attestation tokens binding target file, content hash, temporal anchor, evaluated rules, and pass/block verdict for automated CI/CD pipeline gating.
 * **Cryptographic Source Provenance**:
   - Every citation is tied to an immutable SHA-256 chunk hash with sanitized Markdown references.
 
-### 🧠 Pillar 3: 3-Tier Memory & Provider-Calibrated Guard
+### 🧠 Pillar 3: 3-Tier Memory, BM25 + Temporal Decay & Post-Training Flywheel
 * **L1 (Working Buffer)**: In-memory sliding turn window for active conversation context.
-* **L2 (Episodic Session Ledger)**: SQLite database (`chronofact_memory.db`) running in Write-Ahead Logging (WAL) mode with `PRAGMA busy_timeout=5000;`. Stores immutable session turns and live drift audit logs.
-* **L3 (Semantic Truth Dossier)**: Persistent project invariants (tech stack choices, database schemas, architectural rules).
+* **L2 (Episodic Session Ledger & KTO/DPO Post-Training Flywheel)**: SQLite database (`chronofact_memory.db`) running in Write-Ahead Logging (WAL) mode with `PRAGMA busy_timeout=5000;`. Stores immutable session turns, live drift audit logs, and full untruncated **`epistemic_trajectories`** and **`post_training_pairs`** (with Kahneman-Tversky loss-aversion weights $\lambda_{\text{U}} = 2.25$ for `UNDESIRABLE` contradictions and $\lambda_{\text{D}} = 1.0$ for `DESIRABLE` entailments).
+* **L3 (Semantic Truth Dossier)**: Persistent project invariants (`TECH_STACK`, `ARCH_RULE`, `DATA_MODEL`, `RECENT_DECISION`, and custom entity types) ranked with **BM25 + Exponential Temporal Recency Decay** ($\exp(-0.002 \cdot \Delta t_{\text{days}})$).
 * **Adaptive `MemoryCalibrator`**:
   - Eliminates brittle hardcoded similarity thresholds. Provides provider-calibrated distributions for OpenAI `text-embedding-3`, BGE, Cohere, and local FastEmbed embeddings.
-  - Dynamically calculates relative similarity cutoffs ($\mu + k \cdot \sigma$) across candidate distributions to accommodate varying vector space densities.
+  - Dynamically calculates relative similarity cutoffs ($\mu + k \cdot \sigma$) using Bessel's sample variance correction ($n - 1$) and a small-sample guard ($n \le 3$) combined with an absolute baseline floor.
 * **The Zero-Pollution Guard**:
-  - Queries are evaluated using token-overlap and keyword relevance gating against stored memories.
+  - Evaluates both L3 semantic entities and L2 episodic events against query relevance and suppresses empty `<chronofact_project_truth_dossier>` XML shells when zero relevant memories match.
   - **Invariant**: If the user asks about an unrelated topic, exactly 0 memory tokens are injected, preventing cross-domain degradation.
 
 ### ✂️ Pillar 4: Token Context Bloat & Cost Bleed Prevention (mcplex Technology)
 * **Intent-Boosted TF-IDF Tool Router**:
-  - Solves the Lexical Mismatch Problem: When users speak idiomatically ("Why won't this compile?", "There's a bug on line 42"), an intent-aware domain dictionary boosts relevant tools ($+0.35$ relevance boost) without requiring exact unigram overlap.
+  - Solves the Lexical Mismatch Problem: When users speak idiomatically ("Why won't this compile?", "There's a bug on line 42"), an intent-aware domain dictionary boosts relevant tools ($+0.35$ relevance boost) without requiring exact unigram overlap, while deduplicating identifier sub-tokens and weighting `#stem` prefix matches at $0.5$.
   - **Always-Retain Pinning**: Critical execution primitives (`read_file`, `terminal_exec`, `run_command`) can be permanently pinned so aggressive token pruning never strips foundational capabilities.
-  - Prunes irrelevant schemas down to `top_k` (typically 3-4 tools), achieving **70%-91% token savings per turn**.
-* **Deterministic Prompt Cache Prefix Alignment**:
-  - Formats static system instructions, immutable invariant anchors (`[CHRONOFACT_CACHE_ANCHOR:v1:...]`), and stable tool schemas into the exact prefix of the prompt.
-  - Hits Anthropic 5-minute rolling prompt caches and OpenAI 1024-token prompt caches, reducing input API costs by 50%-80%.
-* **Idempotent Tool Response Cache**:
-  - Caches deterministic tool invocations (repeated file inspections, static documentation fetches) indexed by `SHA-256(tool_name + args)`.
-  - Hits return instantly (0ms) with zero downstream LLM tokens consumed.
+  - Prunes irrelevant schemas down to `top_k` (typically 3-4 tools), achieving **70%-91% token savings per turn**, while extracting real `inputSchema.properties` parameter names.
+* **Unified `AppState` & `McpServer` Runtime**:
+  - The co-hosted HTTP `:3030` Cockpit API and MCP stdio server share the exact same `Arc<ToolResponseCache>`, `Arc<CostTracker>`, and SQLite `MemoryEngine` via `McpServer::from_app_state`, persisting live cost savings across both interfaces.
+* **Deterministic Prompt Cache Prefix Alignment & Stateless MCP Mode**:
+  - Formats static system instructions, immutable invariant anchors (`[CHRONOFACT_CACHE_ANCHOR:v1:...]`), and stable tool schemas into the exact prefix of HTTP proxy prompts while using `SessionMode::StatelessSingleShot` in MCP tool responses to avoid artificial padding bloat.
+* **Idempotent Tool Response Cache with Slash-Aware FQN Invalidation**:
+  - Caches deterministic tool invocations indexed by `SHA-256(tool_name + args)` plus filesystem `mtime`/`size` metadata, and supports per-server invalidation across `"server/tool"`, `"server:tool"`, and `"server__tool"` namespaces.
 * **CostTracker**:
-  - Tracks live token savings, pruned tool counts, and estimated USD saved based on industry standard baselines ($3.00/1M tokens).
+  - Tracks live token savings, pruned tool counts, and estimated USD saved based on industry standard baselines (\$3.00/1M tokens).
 
 ---
 
 ## 🔒 Defensive Security Architecture
 
 Self-assessed defensive engineering controls verified via automated test suite in `docs/SECURITY_AUDIT.md`:
-1. **SSRF Outbound Firewall**: Blocks private networks (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 unique local (`fc00::/7`), loopback (`127.0.0.1`), and AWS/GCP cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`).
+1. **SSRF Outbound Firewall & Package Registry URL Guard**: Blocks private networks (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 unique local (`fc00::/7`), loopback (`127.0.0.1`), and AWS/GCP cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`). Validates third-party package `homepage`/`documentation` URLs and falls back to canonical `crates.io`/`npmjs.com`/`pypi.org` URLs if untrusted metadata fails SSRF checks.
 2. **Signed Context Envelopes**: Injects external web evidence inside demarcated `<untrusted_external_evidence envelope_id="..." hmac_nonce="...">` envelopes with boundary escape-tag defanging to defeat indirect prompt injection.
 3. **100% Prepared SQL Statements**: Zero raw SQL string interpolation. All queries use parameterized queries (`rusqlite::params!`).
-4. **Filesystem Path Escaping Defense**: Sandboxes local file accesses using canonical path checking to prevent `../` directory traversal.
-5. **Zero Secret Leak Guarantee**: Verified by automated regex scanning: 0 API keys, 0 private credentials, and 0 secret tokens in the repository.
+4. **Filesystem Path Escaping Defense & Workspace Root Discovery**: Sandboxes local file accesses using canonical path checking and resolves workspace-root `chronofact_memory.db` even when launched from `bin/`, preventing split-brain SQLite instances.
+5. **16 MB Stdio Frame Cap & Loopback-Only Dev Bind**: Caps MCP and upstream stdio line reads at `16 MB` (`MAX_STDIO_LINE_BYTES`) to prevent OOM DoS, and binds both the Rust API (`127.0.0.1:3030`) and Vite dev server (`127.0.0.1:5173`) strictly to loopback.
+6. **Zero Secret Leak Guarantee**: Verified by automated regex scanning: 0 API keys, 0 private credentials, and 0 secret tokens in the repository.
 
 ---
 
@@ -265,7 +270,7 @@ While semantic intent boosting (+0.35) rescues idiomatic engineering commands wi
 To guarantee zero lock starvation and referential integrity under burst multi-tenant agent transactions:
 * Configured SQLite PRAGMAs: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`, `cache_size=-64000`, `temp_store=MEMORY`, and `wal_autocheckpoint=1000`.
 * Uses non-destructive `INSERT INTO ... ON CONFLICT(...) DO UPDATE SET` upserts across `project_entities` (L3) and `sessions` (L2) to preserve child foreign-key rows (`entity_relations`, `session_events`), with per-project session namespace isolation (`mcp-session:<project_id>`).
-* Wrapped all database read/write transactions in `with_busy_retry` with exponential backoff and jitter (20ms, 40ms, 80ms, 160ms, 320ms, 640ms) handling transient `SQLITE_BUSY` and `SQLITE_LOCKED` states.
+* Wrapped all database read/write transactions in `with_busy_retry` using non-sleeping `Condvar::wait_timeout` exponential backoff and jitter (20ms, 40ms, 80ms, 160ms, 320ms, 640ms) handling transient `SQLITE_BUSY` and `SQLITE_LOCKED` states while passing `INV-REL-ASYNC-BLOCKING` (`check-ci`) with 0 violations.
 
 ---
 
@@ -273,9 +278,13 @@ To guarantee zero lock starvation and referential integrity under burst multi-te
 
 | Metric / Benchmark | Result | Verification Proof |
 |:---|:---:|:---|
-| **Rust Unit & Integration Tests** | **100 / 100 PASSING** | `cargo test` (13 test suites, 0 warnings, 0 failures) |
+| **Rust Unit & Integration Tests** | **115 / 115 PASSING** | `cargo test` (8 lib unit tests + 107 integration tests across 13 suites, 0 warnings, 0 failures) |
+| **Phase 1 & Phase 2 Total Precision Audit Suite** | **8 / 8 PASSING** | Verified in `tests/phase1_phase2_remediation_tests.rs` |
 | **Gemini 4 Argon (`gemini-4-argon`) Horizon & Aliases** | **100% Verified** | Verified in `test_gemini_4_argon_registration_and_aliases` |
-| **Clause-Scoped Policy & Retirement Verification** | **0 False Positives** | Verified in `test_compound_sentence_vendor_clause_scoping` & `test_retirement_statement_not_falsely_flagged_as_contradiction` |
+| **Clause-Scoped Policy & Retirement Verification** | **0 False Positives** | Verified in `test_compound_sentence_vendor_clause_scoping` & `test_multi_vendor_comparison_not_flagged_as_misattribution` |
+| **`NeuralNliCalibrator` & Noisy-OR Contradiction Floor** | **100% Verified** | Verified in `test_verifier_word_boundary_numeric_conflict_and_litotes` |
+| **KTO/DPO Epistemic Trajectory Persistence** | **100% Verified** | Verified in `test_epistemic_trajectory_and_kto_pair_persistence` |
+| **Self-Hosted `check-ci` Invariant Audit** | **0 Violations (1.39ms)** | `chronofact.exe check-ci --path src/memory/mod.rs` (12 rules evaluated) |
 | **Adversarial Prompt Stress Suite** | **12 / 12 PASSING** | `scripts/test_prompts_live.ps1` & `tests/adversarial_prompt_stress.rs` |
 | **CI Automation** | **GitHub Actions** | Automated build & test on push/PR (`.github/workflows/ci.yml`) |
 | **Gateway Multiplexing Throughput** | **1,333,333 ops/sec** | P50: 300ns (Verified in `stress_test_scenario_1`) |
@@ -283,12 +292,12 @@ To guarantee zero lock starvation and referential integrity under burst multi-te
 | **TF-IDF Schema Pruning Ratio (15 Tools)** | **86.7% Token Reduction** | 13 tools pruned, 2 retained on targeted queries |
 | **Adversarial Security Interception** | **100.0% Blocked** | 1,000 / 1,000 prompt injection vectors blocked (0.75 µs/check) |
 | **Claim Verification Latency** | **0.13 ms / claim set** | 7,425 claim sets/sec throughput (sub-millisecond execution) |
-| **Tool Response Cache Hit Latency** | **16.14 µs** | 61,952 ops/sec in-memory SHA-256 lookup + per-server invalidation |
+| **Tool Response Cache Hit Latency** | **16.14 µs** | 61,952 ops/sec in-memory SHA-256 lookup + slash/colon/dunder server invalidation |
 | **Prompt Cache Invariant Alignment** | **100% Byte-Stable Prefix** | Verified in `test_cache_isolated_prompt_prefix_stability` |
 | **Prompt Cache Floor Guarantee** | **>= 1,024 Tokens** | Verified in `test_cache_isolated_prompt_prefix_floor_guarantee` |
 | **Multi-Tenant SQLite Burst Concurrency** | **100% Success (0 Busy Errs)** | Verified in `test_sqlite_with_busy_retry_concurrency` |
 | **Zero-Pollution Memory Leakage** | **0 Tokens** | Verified across 500 interleaved multi-tenant sessions |
-| **Frontend Production Build** | **Clean (<4s)** | `npm run build` (Vite v6.4, 0 errors, gzip: 91 kB) |
+| **Frontend Production Build** | **Clean (<10s)** | `npm run build` (`tsc && vite build`, 0 errors) |
 | **Codebase Secret Vulnerabilities** | **0 Detected** | Rigorous regex scan across tracked files (Self-assessed) |
 
 ---

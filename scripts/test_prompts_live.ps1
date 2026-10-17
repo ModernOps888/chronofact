@@ -120,8 +120,8 @@ if ($resP8.savings_percentage -lt 80.0) { throw "FAIL: Extreme pruning was below
 $metrics = Invoke-RestMethod -Uri "$baseUrl/api/cost/metrics" -Method Get
 Write-Host "[10/12] Real-time Cost Metrics Ledger:" -ForegroundColor Yellow
 Write-Host "        Cumulative Tokens Saved: $($metrics.total_tokens_saved)"
-Write-Host "        Total USD Saved: `$$($metrics.total_usd_saved)"
-Write-Host "        Cache Entries: $($metrics.cache_entries)"
+Write-Host "        Total USD Saved: `$$($metrics.estimated_usd_saved)"
+Write-Host "        Cache Entries: $($metrics.active_cache_entries)"
 
 # 11. Prompt 10: Full End-to-End Epistemic Chat Turn
 $bodyP10 = @{

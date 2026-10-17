@@ -11,4 +11,6 @@ pub use code_invariants::{
     AuditVerdict, CodeAuditReport, CodeInvariantChecker, InvariantRule, InvariantSeverity,
     InvariantViolation,
 };
-pub use verifier::{FactVerifier, VerificationReport, VerificationStatus, VerifiedClaim};
+pub use verifier::{
+    FactVerifier, NeuralNliCalibrator, VerificationReport, VerificationStatus, VerifiedClaim,
+};
