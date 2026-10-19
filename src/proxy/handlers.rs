@@ -479,11 +479,9 @@ pub async fn call_gateway_tool(
     let verification = if should_verify {
         let claims = state.claim_extractor.extract_claims(&result.to_string());
         if !claims.is_empty() {
-            let mut report = state.fact_verifier.verify_claims(&claims, &[]);
-            if report.contradicted_count == 0 {
-                report.hallucination_risk_index = 0.0;
-            }
-            Some(report)
+            // No sources here: hallucination_risk_index is computed over invariant-checked claims
+            // only (0.0 if none contradicted) and is null when no claim could be checked.
+            Some(state.fact_verifier.verify_claims(&claims, &[]))
         } else {
             None
         }

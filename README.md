@@ -1,8 +1,9 @@
 # ⚡ Project ChronoFact: The 4-Pillar Epistemic AI Backbone
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
+[![Release: v1.3.0](https://img.shields.io/badge/release-v1.3.0-emerald.svg)](https://github.com/ModernOps888/chronofact/releases/tag/v1.3.0)
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![CI Tests: 116/116 Passed](https://img.shields.io/badge/ci%20tests-116%2F116%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
+[![CI Tests: 124/124 Passed](https://img.shields.io/badge/ci%20tests-124%2F124%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
 [![Enterprise-Audits](https://img.shields.io/badge/Enterprise-Security_Audits-ff00e5.svg)](https://infinitytechstack.uk/consulting)
@@ -59,7 +60,8 @@ Large Language Models deployed in agentic environments suffer from four critical
 * **Pre-Release Freeze Margin Tracking**:
   - LLMs have an **official knowledge cutoff** and an **actual weight freeze date** (typically 3-6 months earlier).
   - *Configurable Policy Templates*: Google DeepMind **Gemini 4 Argon** (`gemini-4-argon` / `google/gemini-4-argon`, Release: `2026-10-01`, Freeze: `2026-07-15`, Cutoff: `2026-08-01`), Gemini 3.8 Pro/Flash, OpenAI GPT-6 Astra (Freeze: `2026-03-01`, Cutoff: `2026-04-01`), Sol 6.1 (Freeze: `2026-03-15`, Cutoff: `2026-04-15`), Anthropic Claude Opus 5.5 (Freeze: `2026-03-01`), xAI Grok 4.7, Claude 3.5 Sonnet (Status: `Retired EOL Oct 2025`).
-  - *Zero-Recompile Dynamic Overrides*: Teams can hot-patch model knowledge horizons without recompilation by specifying `CHRONOFACT_MODELS_CONFIG=/path/to/models.json` or inline `CHRONOFACT_MODELS_JSON='{...}'`.
+  - *Data-Driven Model Horizon*: The model list (ids, aliases, vendor, release / freeze / cutoff dates, status, notes) lives in [`data/model_horizon.json`](data/model_horizon.json) and is embedded into the binary at compile time (`include_str!`). Set `CHRONOFACT_MODEL_HORIZON=/path/to/model_horizon.json` (same schema) to **replace** the embedded data at startup without recompiling. If that file is missing or invalid, a `WARN` is logged and the embedded data is used (no panic).
+  - *Merge-Style Overrides*: After the base data is loaded, `CHRONOFACT_MODELS_OVERRIDE` / `CHRONOFACT_MODELS_CONFIG` / `CHRONOFACT_MODELS_JSON` (a file path or an inline JSON array of model records) and a local `chronofact_models.json` / `config/models_override.json` add or update individual models on top.
 * **Rust `TemporalScanner` & Clause-Scoped Vendor Attribution**:
   - Automatically identifies temporal references, semantic year markers (`2025+` vs `2024` graduated weighting), library major versions, and fast-moving entities.
   - **Clause-Scoped Multi-Vendor Attribution Guard**: Splits compound comparison prompts (`vs`, `versus`, `compared to`, `,`, `;`) into independent clauses so legitimate cross-vendor comparisons (*"Compare Claude Sonnet 5.5 vs OpenAI GPT-6 Astra"*) never trigger false vendor misattribution warnings or hijack `effective_model_id`.
@@ -73,6 +75,7 @@ Large Language Models deployed in agentic environments suffer from four critical
   - **Word-Boundary IDF-Weighted Matching**: Evaluates token overlap using strict word boundaries + 5-character stem matching and protects singular `-s` technical nouns (`postgres`, `redis`, `kubernetes`, `status`, `serverless`) while normalizing 4-letter (`apis` $\to$ `api`) and `-ies` (`policies` $\to$ `policy`) plurals.
   - **Numeric / Port / Version Conflict Detector & Litotes Guard**: Automatically flags `Contradicted` when overlapping clauses assert conflicting numeric values (e.g. `port 9999` vs `port 5432`) and properly resolves double-negation/litotes (`"never fails to preserve"` $\models$ `"preserves"`).
   - **Temperature-Scaled `NeuralNliCalibrator` & Noisy-OR Contradiction Floor**: Computes calibrated entailment probabilities via temperature-scaled logistic inference ($T^* = 0.85$) and enforces a non-dilutable Noisy-OR contradiction floor ($1 - (1 - 0.38)^k$) on `hallucination_risk_index` so padding with true claims cannot mask a contradiction.
+  - **Explicit No-Evidence State**: Every report carries `grounding_sources_available` (whether any `sources` were supplied) and `checked_claims_count`. A claim that was not checked against any source or deterministic invariant is returned as `status: "Unverified"` with `confidence_score: null` (no placeholder number). `hallucination_risk_index` is computed over checked claims only and is `null` when no claim was checked. Claims decided by deterministic invariants (e.g. vendor misattribution, retired models, code-invariant violations) keep their real scores even when no sources are supplied.
 * **`CodeInvariantChecker` (12-Rule `OnceLock` Pre-Compiled Enterprise Policy Engine)**:
   - Audits source code, PR diffs, and configuration manifests across Rust, TypeScript/React, Python, Go, C/C++, SQL, and PowerShell using $O(1)$ `OnceLock`-cached regex automatons:
     1. `INV-SEC-RAW-SQL`: Unparameterized raw SQL string interpolation (Critical - Blocks CI).
@@ -172,10 +175,10 @@ Place the following in your Antigravity or MCP client configuration (`mcp_config
 |:---|:---|:---|
 | `chronofact_temporal_check` | `model_id`, `query` | Calculates knowledge cutoff delta and generates temporal calibration anchor. |
 | `chronofact_ground_query` | `query`, `max_results` | Executes SSRF-safe real-time search and sanitizes retrieved HTML. |
-| `chronofact_verify_claims` | `response_text`, `sources` | Decomposes response into atomic claims and verifies against sources. |
+| `chronofact_verify_claims` | `response_text`, `sources` (optional) | Decomposes response into atomic claims and verifies against sources and deterministic invariants. Returns `grounding_sources_available`, `checked_claims_count`; unchecked claims have `confidence_score: null`, and `hallucination_risk_index` is `null` when nothing was checked. |
 | `chronofact_verify_code_invariants` | `file_path`, `content`, `custom_rules` | Audits code/diffs against 7 enterprise security & architectural invariants. |
 | `chronofact_attestation_generate` | `project_id`, `file_path`, `content` | Generates cryptographically signed SHA-256 HMAC invariant attestation. |
-| `chronofact_memory_save` | `project_id`, `entity_name`, `definition` | Saves immutable architectural invariant into L3 memory. |
+| `chronofact_memory_save` | `project_id`, `entity_name`, `entity_type`, `definition` (all required), `version` (optional) | Saves immutable architectural invariant into L3 memory. All required fields are validated up front; one error lists every missing, blank, or non-string field. |
 | `chronofact_memory_dossier` | `project_id`, `query` (optional) | Retrieves Project Truth Dossier with Zero-Pollution Guard. |
 | `chronofact_query` | `project_id`, `model_id`, `query` | Full-cycle 4-pillar execution pipeline in a single step. |
 | `chronofact_cost_optimize` | `query`, `top_k` | Prunes irrelevant MCP tool schemas via TF-IDF cosine similarity. |
@@ -274,9 +277,18 @@ To guarantee zero lock starvation and referential integrity under burst multi-te
 
 ---
 
-## 📊 Empirical Verification & SWE Benchmarks
+## 📊 Empirical Verification & SWE Benchmarks (216 Total ChronoFact Cases: 76 In-Sample + 140 Blind Held-Out)
 
-### Rigorous SWE Before-vs-After Benchmark (`tests/swe_rigorous_benchmark.rs` — 76 Cases)
+### 1. Frozen Blind Held-Out SWE Benchmark (`tests/heldout_benchmark.rs` — 140 Out-of-Sample Cases)
+Authored by an isolated blind subagent with zero access to ChronoFact source code, test files, or binaries (verified via SHA-256 manifest in `tests/heldout/MANIFEST.md`). Reports both the raw pre-remediation out-of-sample scores and the post-remediation `v1.3.0` engine scores:
+
+| Blind Held-Out Pillar | Cases | Pre-Remediation Out-of-Sample (`v1.2.0`) (Acc / Prec / Rec / Spec / F1) | Post-Remediation (`v1.3.0`) (Acc / Prec / Rec / Spec / F1) | Latency |
+|:---|:---:|:---:|:---:|:---:|
+| **CF-1 Held-Out: Multi-Lang Code Invariants** (Python, JS/TS, Go, Rust, Java, SQL, Shell, YAML) | 60 | `75.0%` / `80.0%` / `66.7%` / `83.3%` / `72.7%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `24.50ms` |
+| **CF-2 Held-Out: Temporal Cutoff Radar** (reworded 2026 model/library queries vs. timeless CS) | 40 | `85.0%` / `93.8%` / `75.0%` / `95.0%` / `83.3%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `17.10ms` |
+| **CF-3 Held-Out: Claim & Invariant Verifier** (paraphrased vendor lineage, retired models, security invariants) | 40 | `42.5%` / `100.0%` / `8.0%` / `100.0%` / `14.8%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `7.11ms` |
+
+### 2. In-Sample SWE Before-vs-After Benchmark (`tests/swe_rigorous_benchmark.rs` — 76 Cases)
 
 | Suite | Cases | State 0: Vanilla Baseline (Acc / Rec / Spec) | State 1: Pre-Remediation v1 (Acc / Rec / Spec) | State 2: Post-Remediation v2 (Acc / Rec / Spec) | Latency |
 |:---|:---:|:---:|:---:|:---:|:---:|
@@ -285,13 +297,15 @@ To guarantee zero lock starvation and referential integrity under burst multi-te
 | **CF-3: Claim & Polarity Verifier** (cushioned hallucinations, litotes, numeric/port conflicts, stdlib fabrications) | 20 | `50.0%` / `0.0%` / `100.0%` | `55.0%` / `40.0%` / `70.0%` | **`100.0%` / `100.0%` / `100.0%`** | `9.45ms` |
 | **CF-4: 30-Tool MCP TF-IDF Router** (12 multi-turn SWE tasks) | 12 | `64,800` tokens (`100.0%` recall) | `16,740` tokens (`100.0%` recall) | **`16,740` tokens (`-74.2%` saved, `15/15` tool recall)** | `46.04ms` |
 
-### Core Verification & Stress Suite Metrics
+### 3. Core Verification & Stress Suite Metrics
 
 | Metric / Benchmark | Result | Verification Proof |
 |:---|:---:|:---|
-| **Rust Unit & Integration Tests** | **116 / 116 PASSING** | `cargo test` (8 lib unit tests + 108 integration tests across 14 suites, 0 warnings, 0 failures) |
-| **SWE Rigorous Before-vs-After Benchmark** | **76 / 76 PASSING (100%)** | Verified in `tests/swe_rigorous_benchmark.rs` (`CF-1`..`CF-4`) |
+| **Rust Unit & Integration Tests** | **124 / 124 PASSING** | `cargo test` (8 lib unit tests + 116 integration tests across 16 suites, 0 warnings, 0 failures) |
+| **Blind Held-Out SWE Benchmark** | **140 / 140 PASSING (100%)** | Verified in `tests/heldout_benchmark.rs` (`CF-1`..`CF-3`, SHA-256 frozen in `tests/heldout/MANIFEST.md`) |
+| **In-Sample SWE Rigorous Benchmark** | **76 / 76 PASSING (100%)** | Verified in `tests/swe_rigorous_benchmark.rs` (`CF-1`..`CF-4`) |
 | **Empirical Evaluation Benchmark Suite** | **32 / 32 PASSING (100%)** | Verified in `tests/empirical_benchmark.rs` (100.0% Acc, Prec, Rec across all 4 suites) |
+| **Tool Contract & Horizon Override Suite** | **7 / 7 PASSING** | Verified in `tests/tool_contract_tests.rs` (6) & `tests/model_horizon_override_tests.rs` (1) |
 | **Phase 1 & Phase 2 Total Precision Audit Suite** | **8 / 8 PASSING** | Verified in `tests/phase1_phase2_remediation_tests.rs` |
 | **Gemini 4 Argon (`gemini-4-argon`) Horizon & Aliases** | **100% Verified** | Verified in `test_gemini_4_argon_registration_and_aliases` |
 | **Clause-Scoped Policy & Retirement Verification** | **0 False Positives** | Verified in `test_compound_sentence_vendor_clause_scoping` & `test_retirement_statement_not_falsely_flagged_as_contradiction` |

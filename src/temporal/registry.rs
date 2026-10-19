@@ -15,6 +15,78 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Built-in model horizon policy data, embedded at compile time.
+pub const EMBEDDED_MODEL_HORIZON_JSON: &str = include_str!("../../data/model_horizon.json");
+
+/// Environment variable naming a JSON file (same schema as `data/model_horizon.json`) that
+/// replaces the embedded seed data at runtime.
+pub const MODEL_HORIZON_ENV_VAR: &str = "CHRONOFACT_MODEL_HORIZON";
+
+/// One model record in the horizon data file: the `ModelHorizon` fields plus lookup aliases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelHorizonEntry {
+    #[serde(flatten)]
+    pub horizon: ModelHorizon,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+/// Top-level schema of the model horizon data file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelHorizonData {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub description: String,
+    pub models: Vec<ModelHorizonEntry>,
+}
+
+/// Where the seed data of a registry came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HorizonDataSource {
+    Embedded,
+    Override(String),
+}
+
+impl ModelHorizonData {
+    pub fn parse(json_str: &str) -> Result<Self, String> {
+        let data: ModelHorizonData = serde_json::from_str(json_str)
+            .map_err(|e| format!("Failed to parse model horizon data: {}", e))?;
+        if data.models.is_empty() {
+            return Err("Model horizon data contains no models".to_string());
+        }
+        Ok(data)
+    }
+
+    pub fn embedded() -> Self {
+        Self::parse(EMBEDDED_MODEL_HORIZON_JSON)
+            .expect("embedded data/model_horizon.json must be valid (checked by tests)")
+    }
+
+    /// Loads the override file at `path` if given and valid; otherwise logs a warning (when a path
+    /// was given) and returns the embedded data. Never panics on a bad override.
+    pub fn load_with_override(path: Option<&str>) -> (Self, HorizonDataSource) {
+        let Some(path) = path.map(str::trim).filter(|p| !p.is_empty()) else {
+            return (Self::embedded(), HorizonDataSource::Embedded);
+        };
+        match std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read '{}': {}", path, e))
+            .and_then(|content| Self::parse(&content))
+        {
+            Ok(data) => (data, HorizonDataSource::Override(path.to_string())),
+            Err(e) => {
+                tracing::warn!(
+                    "{}={} is invalid ({}); falling back to embedded model horizon data",
+                    MODEL_HORIZON_ENV_VAR,
+                    path,
+                    e
+                );
+                (Self::embedded(), HorizonDataSource::Embedded)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelHorizon {
     pub model_id: String,
@@ -39,372 +111,32 @@ impl Default for ModelRegistry {
 }
 
 impl ModelRegistry {
+    /// Builds the registry from the embedded `data/model_horizon.json`, or from the file named by
+    /// `CHRONOFACT_MODEL_HORIZON` when set and valid, then applies the merge-style overrides.
     pub fn new() -> Self {
+        let override_path = std::env::var(MODEL_HORIZON_ENV_VAR).ok();
+        let (data, _source) = ModelHorizonData::load_with_override(override_path.as_deref());
+        Self::from_data(data)
+    }
+
+    /// Builds a registry from explicit horizon data, then applies the merge-style overrides.
+    pub fn from_data(data: ModelHorizonData) -> Self {
         let mut registry = Self {
             models: HashMap::new(),
         };
-        registry.seed_known_models();
+        registry.seed_from_data(data);
         registry.load_environmental_overrides();
         registry
     }
 
-    fn seed_known_models(&mut self) {
-        let known = vec![
-            // ==================== OpenAI GPT-6 Generation (September 2026) ====================
-            ModelHorizon {
-                model_id: "gpt-6-astra".to_string(),
-                display_name: "GPT-6 Astra (Astra 6)".to_string(),
-                vendor: "OpenAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 9, 3).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Flagship)".to_string(),
-                notes: "OpenAI flagship frontier intelligence with 1.05M context window, autonomous computer use and advanced coding. Released September 3, 2026.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "gpt-6-1-sol".to_string(),
-                display_name: "GPT-6.1 Sol (Sol 6.1)".to_string(),
-                vendor: "OpenAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 9, 29).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 4, 15).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Flagship)".to_string(),
-                notes: "OpenAI DevDay 2026 release with 1.05M context, near-Astra agentic coding performance at 1/5th the inference cost. Released September 29, 2026.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "gpt-5".to_string(),
-                display_name: "GPT-5 (Orion)".to_string(),
-                vendor: "OpenAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 11, 1).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2025, 5, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2025, 6, 1).unwrap(),
-                is_frontier: true,
-                status: "Active".to_string(),
-                notes: "OpenAI fifth-generation foundational intelligence.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "o3".to_string(),
-                display_name: "OpenAI o3".to_string(),
-                vendor: "OpenAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 3, 1).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 11, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 12, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Reasoning)".to_string(),
-                notes: "Full-scale reasoning model with extended test-time compute.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "o3-mini".to_string(),
-                display_name: "OpenAI o3-mini".to_string(),
-                vendor: "OpenAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 1, 31).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 10, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 10, 31).unwrap(),
-                is_frontier: true,
-                status: "Active".to_string(),
-                notes: "High-speed reasoning model for coding, math, and STEM.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "o1".to_string(),
-                display_name: "OpenAI o1 (Legacy)".to_string(),
-                vendor: "OpenAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2024, 12, 5).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 5, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 10, 31).unwrap(),
-                is_frontier: false,
-                status: "Legacy Active".to_string(),
-                notes: "First-generation OpenAI reasoning model.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "gpt-4o".to_string(),
-                display_name: "GPT-4o (Legacy)".to_string(),
-                vendor: "OpenAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2024, 5, 13).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2023, 10, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 10, 31).unwrap(),
-                is_frontier: false,
-                status: "Legacy Active".to_string(),
-                notes: "Flagship multimodal Omni model. Superseded by GPT-5 & GPT-6 series.".to_string(),
-            },
-
-            // ==================== Anthropic Claude 5.5 Generation (September 2026) ====================
-            ModelHorizon {
-                model_id: "claude-opus-5-5".to_string(),
-                display_name: "Claude Opus 5.5".to_string(),
-                vendor: "Anthropic".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 9, 22).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Flagship)".to_string(),
-                notes: "Anthropic flagship frontier reasoning model. Released September 22, 2026.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "claude-sonnet-5-5".to_string(),
-                display_name: "Claude Sonnet 5.5".to_string(),
-                vendor: "Anthropic".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 9, 28).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 4, 15).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Flagship)".to_string(),
-                notes: "Anthropic flagship coding intelligence. Released September 28, 2026.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "claude-haiku-5-5".to_string(),
-                display_name: "Claude Haiku 5.5".to_string(),
-                vendor: "Anthropic".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 8, 15).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
-                is_frontier: false,
-                status: "Active".to_string(),
-                notes: "Anthropic ultra-low latency generation 5.5 model.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "claude-3-7-sonnet".to_string(),
-                display_name: "Claude 3.7 Sonnet".to_string(),
-                vendor: "Anthropic".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 2, 24).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 10, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 11, 1).unwrap(),
-                is_frontier: false,
-                status: "Deprecated (Superseded by 5.5)".to_string(),
-                notes: "Superseded by Claude 4 and Claude 5.5 generations.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "claude-3-5-sonnet".to_string(),
-                display_name: "Claude 3.5 Sonnet (Retired)".to_string(),
-                vendor: "Anthropic".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2024, 6, 20).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 4, 30).unwrap(),
-                is_frontier: false,
-                status: "Retired (End of Life)".to_string(),
-                notes: "Officially retired by Anthropic on October 28, 2025. API requests defunct.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "claude-3-opus".to_string(),
-                display_name: "Claude 3 Opus (Retired)".to_string(),
-                vendor: "Anthropic".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2024, 2, 29).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2023, 8, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2023, 8, 31).unwrap(),
-                is_frontier: false,
-                status: "Retired".to_string(),
-                notes: "First-generation Claude 3 flagship. Retired.".to_string(),
-            },
-
-            // ==================== xAI Grok 4+ Generation (2025-2026) ====================
-            ModelHorizon {
-                model_id: "grok-4-7".to_string(),
-                display_name: "Grok 4.7".to_string(),
-                vendor: "xAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Flagship)".to_string(),
-                notes: "Latest xAI frontier flagship trained on expanded Colossus supercluster. Released September 21, 2026.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "grok-4".to_string(),
-                display_name: "Grok 4".to_string(),
-                vendor: "xAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 7, 9).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2025, 3, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2025, 4, 1).unwrap(),
-                is_frontier: true,
-                status: "Active".to_string(),
-                notes: "Fourth-generation xAI frontier intelligence released July 9, 2025.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "grok-3".to_string(),
-                display_name: "Grok 3 (Legacy Frontier)".to_string(),
-                vendor: "xAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 2, 17).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 11, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 11, 30).unwrap(),
-                is_frontier: false,
-                status: "Superseded by Grok 4+".to_string(),
-                notes: "Launched February 2025 on initial Colossus cluster; superseded by Grok 4 & 4.7.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "grok-3-mini".to_string(),
-                display_name: "Grok 3 Mini".to_string(),
-                vendor: "xAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 2, 17).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 11, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 11, 30).unwrap(),
-                is_frontier: false,
-                status: "Legacy Active".to_string(),
-                notes: "High-speed reasoning model by xAI.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "grok-2".to_string(),
-                display_name: "Grok 2 (Retired)".to_string(),
-                vendor: "xAI".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2024, 8, 13).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 5, 1).unwrap(),
-                is_frontier: false,
-                status: "Retired".to_string(),
-                notes: "Second-generation flagship from xAI. Deprecated.".to_string(),
-            },
-
-            // ==================== Google Gemini Models ====================
-            ModelHorizon {
-                model_id: "gemini-4-argon".to_string(),
-                display_name: "Gemini 4 Argon".to_string(),
-                vendor: "Google DeepMind".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 8, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Flagship)".to_string(),
-                notes: "Google DeepMind fourth-generation Argon frontier reasoning and agentic coding model.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "gemini-3-8-flash".to_string(),
-                display_name: "Gemini 3.8 Flash".to_string(),
-                vendor: "Google".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Live)".to_string(),
-                notes: "Google fast multimodal frontier model.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "gemini-3-8-pro".to_string(),
-                display_name: "Gemini 3.8 Pro".to_string(),
-                vendor: "Google".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 8, 15).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier Flagship)".to_string(),
-                notes: "Google frontier multimodal reasoning flagship with deep code synthesis.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "gemini-2-0-pro".to_string(),
-                display_name: "Gemini 2.0 Pro".to_string(),
-                vendor: "Google".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 2, 5).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 10, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 11, 1).unwrap(),
-                is_frontier: true,
-                status: "Active".to_string(),
-                notes: "Google reasoning and coding model with 2M context.".to_string(),
-            },
-
-            // ==================== DeepSeek Models ====================
-            ModelHorizon {
-                model_id: "deepseek-v4-1-flash".to_string(),
-                display_name: "DeepSeek V4.1 Flash".to_string(),
-                vendor: "DeepSeek".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2026, 8, 20).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Frontier MoE)".to_string(),
-                notes: "High-speed MoE frontier coding and reasoning model by DeepSeek. Released August 2026.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "deepseek-r1".to_string(),
-                display_name: "DeepSeek R1".to_string(),
-                vendor: "DeepSeek".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2025, 1, 20).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 7, 31).unwrap(),
-                is_frontier: true,
-                status: "Active (Open Weights)".to_string(),
-                notes: "Open-weights reasoning frontier model with pure RL.".to_string(),
-            },
-            ModelHorizon {
-                model_id: "deepseek-v3".to_string(),
-                display_name: "DeepSeek V3".to_string(),
-                vendor: "DeepSeek".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2024, 12, 26).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Open Weights)".to_string(),
-                notes: "671B MoE architecture with multi-head latent attention.".to_string(),
-            },
-
-            // ==================== Meta Models ====================
-            ModelHorizon {
-                model_id: "llama-3-3-70b".to_string(),
-                display_name: "Llama 3.3 70B".to_string(),
-                vendor: "Meta".to_string(),
-                public_release_date: NaiveDate::from_ymd_opt(2024, 12, 6).unwrap(),
-                estimated_training_freeze: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
-                official_knowledge_cutoff: NaiveDate::from_ymd_opt(2024, 8, 1).unwrap(),
-                is_frontier: true,
-                status: "Active (Open Weights)".to_string(),
-                notes: "Meta open-weights flagship with 128k context.".to_string(),
-            },
-        ];
-
-        for m in known {
+    fn seed_from_data(&mut self, data: ModelHorizonData) {
+        for entry in data.models {
+            let m = entry.horizon;
             // Insert primary key
             self.models.insert(m.model_id.to_lowercase(), m.clone());
-
             // Register aliases
-            if m.model_id == "gemini-4-argon" {
-                self.models.insert("google/gemini-4-argon".to_string(), m.clone());
-                self.models.insert("gemini-4.0-argon".to_string(), m.clone());
-                self.models.insert("gemini-4".to_string(), m.clone());
-                self.models.insert("gemini4-argon".to_string(), m.clone());
-                self.models.insert("gemini4argon".to_string(), m.clone());
-                self.models.insert("argon".to_string(), m.clone());
-            } else if m.model_id == "gemini-3-8-flash" {
-                self.models.insert("google/gemini-3.8-flash".to_string(), m.clone());
-                self.models.insert("gemini-3.8-flash".to_string(), m.clone());
-            } else if m.model_id == "gpt-6-astra" {
-                self.models.insert("openai/astra-6".to_string(), m.clone());
-                self.models.insert("openai/gpt-6-astra".to_string(), m.clone());
-                self.models.insert("astra-6".to_string(), m.clone());
-                self.models.insert("astr-6".to_string(), m.clone());
-                self.models.insert("astr6".to_string(), m.clone());
-                self.models.insert("astra6".to_string(), m.clone());
-                self.models.insert("gpt6-astra".to_string(), m.clone());
-                self.models.insert("gpt-6".to_string(), m.clone());
-                self.models.insert("gpt6".to_string(), m.clone());
-            } else if m.model_id == "gpt-6-1-sol" {
-                self.models.insert("openai/sol-6.1".to_string(), m.clone());
-                self.models.insert("openai/gpt-6.1-sol".to_string(), m.clone());
-                self.models.insert("sol-6-1".to_string(), m.clone());
-                self.models.insert("sol-6.1".to_string(), m.clone());
-                self.models.insert("sol6.1".to_string(), m.clone());
-                self.models.insert("sol-6".to_string(), m.clone());
-                self.models.insert("sol6".to_string(), m.clone());
-                self.models.insert("gpt-6.1-sol".to_string(), m.clone());
-            } else if m.model_id == "claude-opus-5-5" {
-                self.models.insert("anthropic/claude-opus-5.5".to_string(), m.clone());
-                self.models.insert("claude-opus-5.5".to_string(), m.clone());
-                self.models.insert("opus-5-5".to_string(), m.clone());
-                self.models.insert("opus-5.5".to_string(), m.clone());
-                self.models.insert("claude-5-5-opus".to_string(), m.clone());
-                self.models.insert("opus5.5".to_string(), m.clone());
-            } else if m.model_id == "claude-sonnet-5-5" {
-                self.models.insert("anthropic/claude-sonnet-5.5".to_string(), m.clone());
-                self.models.insert("claude-sonnet-5.5".to_string(), m.clone());
-                self.models.insert("sonnet-5-5".to_string(), m.clone());
-                self.models.insert("sonnet-5.5".to_string(), m.clone());
-                self.models.insert("claude-5-5-sonnet".to_string(), m.clone());
-                self.models.insert("sonnet5.5".to_string(), m.clone());
-            } else if m.model_id == "grok-4-7" {
-                self.models.insert("x-ai/grok-4.7".to_string(), m.clone());
-                self.models.insert("grok-4.7".to_string(), m.clone());
-                self.models.insert("grok4.7".to_string(), m.clone());
-                self.models.insert("grok47".to_string(), m.clone());
-            } else if m.model_id == "deepseek-v4-1-flash" {
-                self.models.insert("deepseek/deepseek-v4.1-flash".to_string(), m.clone());
-                self.models.insert("deepseek-v4.1-flash".to_string(), m.clone());
+            for alias in entry.aliases {
+                self.models.insert(alias, m.clone());
             }
         }
     }

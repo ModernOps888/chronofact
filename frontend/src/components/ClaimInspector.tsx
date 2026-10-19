@@ -82,7 +82,7 @@ export const ClaimInspector: React.FC<Props> = ({ report, sources, onVerifyCusto
           <div className="bg-[#0b0f19] border border-amber-500/30 p-4 rounded-xl shadow-lg">
             <div className="text-xs font-mono text-amber-400 font-bold">Hallucination Risk</div>
             <div className="text-3xl font-black text-amber-400 mt-1 font-mono">
-              {(report.hallucination_risk_index * 100).toFixed(0)}%
+              {report.hallucination_risk_index == null ? 'N/A' : `${(report.hallucination_risk_index * 100).toFixed(0)}%`}
             </div>
             <div className="text-xs text-slate-400 mt-1 font-mono">Aggregate epistemic risk</div>
           </div>
@@ -125,7 +125,7 @@ export const ClaimInspector: React.FC<Props> = ({ report, sources, onVerifyCusto
                         : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                     }`}
                   >
-                    {vc.status.toUpperCase()} ({(vc.confidence_score * 100).toFixed(0)}% Conf)
+                    {vc.status.toUpperCase()} ({vc.confidence_score == null ? 'not checked' : `${(vc.confidence_score * 100).toFixed(0)}% Conf`})
                   </span>
                 </div>
 

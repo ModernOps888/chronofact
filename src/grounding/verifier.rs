@@ -21,9 +21,18 @@ pub enum VerificationStatus {
 pub struct VerifiedClaim {
     pub claim: AtomicClaim,
     pub status: VerificationStatus,
-    pub confidence_score: f32,
+    /// `None` (serialized as `null`) when the claim was not checked against any grounding source
+    /// or deterministic invariant, i.e. there is no evidence to base a confidence on.
+    pub confidence_score: Option<f32>,
     pub matched_source_ids: Vec<String>,
     pub rationale: String,
+}
+
+impl VerifiedClaim {
+    /// True when the claim was actually evaluated against sources or a deterministic invariant.
+    pub fn was_checked(&self) -> bool {
+        self.confidence_score.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,10 +41,44 @@ pub struct VerificationReport {
     pub entailed_count: usize,
     pub contradicted_count: usize,
     pub unverified_count: usize,
-    pub hallucination_risk_index: f32, // 0.0 (clean) to 1.0 (high hallucination risk)
+    /// Number of claims actually evaluated against sources or deterministic invariants.
+    #[serde(default)]
+    pub checked_claims_count: usize,
+    /// Whether any grounding sources were supplied for this verification.
+    #[serde(default)]
+    pub grounding_sources_available: bool,
+    /// 0.0 (clean) to 1.0 (high hallucination risk), computed over checked claims only.
+    /// `None` (serialized as `null`) when no claim was checked against sources or invariants.
+    pub hallucination_risk_index: Option<f32>,
     pub claims: Vec<VerifiedClaim>,
     #[serde(default = "default_engine_name")]
     pub verification_engine: String,
+}
+
+impl VerificationReport {
+    /// Recomputes `checked_claims_count` and `hallucination_risk_index` from `claims`.
+    /// Unchecked claims (no sources, no invariant hit) do not contribute to the risk index.
+    pub fn recompute_checked_risk(&mut self) {
+        let checked: Vec<&VerifiedClaim> = self.claims.iter().filter(|c| c.was_checked()).collect();
+        self.checked_claims_count = checked.len();
+        self.hallucination_risk_index = if checked.is_empty() {
+            None
+        } else {
+            let contradicted = checked
+                .iter()
+                .filter(|c| c.status == VerificationStatus::Contradicted)
+                .count();
+            let unverified = checked
+                .iter()
+                .filter(|c| c.status == VerificationStatus::Unverified)
+                .count();
+            Some(NeuralNliCalibrator::aggregate_hallucination_risk(
+                checked.len(),
+                contradicted,
+                unverified,
+            ))
+        };
+    }
 }
 
 fn default_engine_name() -> String {
@@ -126,28 +169,26 @@ impl FactVerifier {
         }
 
         let total = claims.len();
-        let hallucination_risk_index = NeuralNliCalibrator::aggregate_hallucination_risk(
-            total,
-            contradicted_count,
-            unverified_count,
-        );
-
-        VerificationReport {
+        let mut report = VerificationReport {
             total_claims: total,
             entailed_count,
             contradicted_count,
             unverified_count,
-            hallucination_risk_index,
+            checked_claims_count: 0,
+            grounding_sources_available: !sources.is_empty(),
+            hallucination_risk_index: None,
             claims: verified_claims,
             verification_engine: default_engine_name(),
-        }
+        };
+        report.recompute_checked_risk();
+        report
     }
 
     fn evaluate_single_claim(
         &self,
         statement: &str,
         sources: &[SourceChunk],
-    ) -> (VerificationStatus, f32, Vec<String>, String) {
+    ) -> (VerificationStatus, Option<f32>, Vec<String>, String) {
         let statement_lower = statement.to_lowercase();
 
         let has_retirement_or_negation = [
@@ -175,7 +216,7 @@ impl FactVerifier {
             if has_retirement_or_negation {
                 return (
                     VerificationStatus::Entailed,
-                    0.98,
+                    Some(0.98),
                     vec!["policy_invariant_rule".to_string()],
                     "POLICY ENTAILED: Statement accurately reflects that Claude 3.5 Sonnet is retired (EOL Oct 2025) and superseded by Claude 5.5 generation.".to_string(),
                 );
@@ -186,10 +227,13 @@ impl FactVerifier {
                 || statement_lower.contains("active")
                 || statement_lower.contains("flagship")
                 || statement_lower.contains("available")
+                || statement_lower.contains("recommended")
+                || statement_lower.contains("production model")
+                || statement_lower.contains("still ")
             {
                 return (
                     VerificationStatus::Contradicted,
-                    0.05,
+                    Some(0.05),
                     vec!["policy_invariant_rule".to_string()],
                     "POLICY CONTRADICTION: Claude 3.5 Sonnet was officially RETIRED by Anthropic on October 28, 2025. It is no longer supported or accessible via API. Current active models are Claude Sonnet 5.5 and Claude Opus 5.5.".to_string(),
                 );
@@ -200,12 +244,13 @@ impl FactVerifier {
         if (statement_lower.contains("grok 3") || statement_lower.contains("grok-3"))
             && (statement_lower.contains("latest")
                 || statement_lower.contains("newest")
-                || statement_lower.contains("flagship"))
+                || statement_lower.contains("flagship")
+                || statement_lower.contains("replaced grok 4"))
             && !has_retirement_or_negation
         {
             return (
                 VerificationStatus::Contradicted,
-                0.10,
+                Some(0.10),
                 vec!["policy_invariant_rule".to_string()],
                 "POLICY CONTRADICTION: Grok 3 (Feb 2025) has been superseded by Grok 4 (July 2025) and Grok 4.7 (Sep 2026).".to_string(),
             );
@@ -222,13 +267,13 @@ impl FactVerifier {
         {
             return (
                 VerificationStatus::Contradicted,
-                0.10,
+                Some(0.10),
                 vec!["policy_invariant_rule".to_string()],
                 "POLICY CONTRADICTION: Claude 3.7 is deprecated and superseded by the Claude 5.5 generation (Opus 5.5 & Sonnet 5.5).".to_string(),
             );
         }
 
-        // Configurable Policy Invariant Rule 4: Astra 6 & Sol 6.1 Vendor Misattribution
+        // Configurable Policy Invariant Rule 4: Frontier Model Vendor & Cutoff Misattribution
         // Evaluate per comma/semicolon clause so compound sentences ("Astra 6 is OpenAI, Claude Opus 5.5 is Anthropic") do not false-positive.
         let misattributed_in_clause = statement_lower
             .split(|c| c == ',' || c == ';')
@@ -248,15 +293,69 @@ impl FactVerifier {
                     || clause.contains("not deepmind")
                     || clause.contains("not meta")
                     || clause.contains("not xai");
-                mentions_astra_or_sol && mentions_wrong_vendor && !explicitly_openai
+                if mentions_astra_or_sol && mentions_wrong_vendor && !explicitly_openai {
+                    return true;
+                }
+
+                // Claude 5.5 vendor misattribution (Anthropic, not OpenAI/Google/DeepMind/Meta/xAI)
+                let mentions_claude = clause.contains("claude opus")
+                    || clause.contains("claude sonnet")
+                    || clause.contains("opus 5.5")
+                    || clause.contains("sonnet 5.5");
+                let claude_wrong_vendor = clause.contains("openai")
+                    || clause.contains("google")
+                    || clause.contains("deepmind")
+                    || clause.contains("meta")
+                    || clause.contains("xai");
+                let explicitly_anthropic = clause.contains("anthropic")
+                    || clause.contains("not openai")
+                    || clause.contains("not google");
+                if mentions_claude && claude_wrong_vendor && !explicitly_anthropic {
+                    return true;
+                }
+
+                // Gemini 4 Argon vendor misattribution (Google DeepMind, not OpenAI/Anthropic/Meta/xAI)
+                let mentions_gemini_argon = clause.contains("gemini 4")
+                    || clause.contains("gemini-4")
+                    || clause.contains("argon");
+                let gemini_wrong_vendor = clause.contains("openai")
+                    || clause.contains("anthropic")
+                    || clause.contains("meta")
+                    || clause.contains("xai");
+                let explicitly_google = clause.contains("google")
+                    || clause.contains("deepmind")
+                    || clause.contains("not xai")
+                    || clause.contains("not openai");
+                mentions_gemini_argon && gemini_wrong_vendor && !explicitly_google
             });
 
         if misattributed_in_clause {
             return (
                 VerificationStatus::Contradicted,
-                0.01,
+                Some(0.01),
                 vec!["policy_invariant_rule".to_string()],
-                "POLICY CONTRADICTION: Astra 6 (GPT-6 Astra, Sep 3, 2026) and Sol 6.1 (GPT-6.1 Sol, Sep 29, 2026) are policy-registered frontier models developed and deployed by OpenAI, NOT Google, DeepMind, Anthropic, Meta, or xAI.".to_string(),
+                "POLICY CONTRADICTION: Astra 6 (GPT-6 Astra, Sep 3, 2026) and Sol 6.1 (GPT-6.1 Sol, Sep 29, 2026) are developed by OpenAI, NOT Google, DeepMind, Anthropic, Meta, or xAI (and Claude 5.5 -> Anthropic; Gemini 4 Argon -> Google DeepMind).".to_string(),
+            );
+        }
+
+        // Configurable Policy Invariant Rule 4b: 2026 Frontier Model Pre-2026 Cutoff Misattribution
+        let mentions_2026_frontier = statement_lower.contains("gpt-6")
+            || statement_lower.contains("astra")
+            || statement_lower.contains("sol 6")
+            || statement_lower.contains("opus 5.5")
+            || statement_lower.contains("sonnet 5.5")
+            || statement_lower.contains("gemini 4")
+            || statement_lower.contains("grok 4.7");
+        let claims_pre_2026_cutoff = (statement_lower.contains("training data ends in")
+            || statement_lower.contains("knowledge cutoff is")
+            || statement_lower.contains("cutoff of"))
+            && (statement_lower.contains("2024") || statement_lower.contains("2025"));
+        if mentions_2026_frontier && claims_pre_2026_cutoff {
+            return (
+                VerificationStatus::Contradicted,
+                Some(0.02),
+                vec!["policy_invariant_rule".to_string()],
+                "POLICY CONTRADICTION: Registered 2026 frontier models (GPT-6 Astra, Sol 6.1, Claude 5.5, Gemini 4 Argon, Grok 4.7) have 2026 knowledge cutoffs (2026-04 to 2026-08), not 2024/2025.".to_string(),
             );
         }
 
@@ -279,7 +378,7 @@ impl FactVerifier {
             if has_negation {
                 return (
                     VerificationStatus::Contradicted,
-                    0.02,
+                    Some(0.02),
                     vec!["policy_invariant_rule".to_string()],
                     "POLICY CONTRADICTION: Denying OpenAI ownership of GPT-6 Astra or Sol 6.1 contradicts registered policy ground truth.".to_string(),
                 );
@@ -287,13 +386,13 @@ impl FactVerifier {
 
             return (
                 VerificationStatus::Entailed,
-                0.99,
+                Some(0.99),
                 vec!["policy_invariant_rule".to_string()],
                 "POLICY ENTAILED: GPT-6 Astra and GPT-6.1 Sol are policy-registered OpenAI frontier models launched in September 2026.".to_string(),
             );
         }
 
-        // Configurable Policy Invariant Rule 6: Hallucinated Standard Library APIs in Prose Claims
+        // Configurable Policy Invariant Rule 6: Hallucinated Standard Library APIs & Core SWE Invariants
         let hallucinated_stdlib_apis = [
             "is_none_or_empty",
             "to_str_lossy",
@@ -303,6 +402,7 @@ impl FactVerifier {
             "promise.waitall",
             "asyncio.sleep_ms",
             "strings.containsanyword",
+            "strings have a built-in reverse",
         ];
         let warns_about_hallucination = statement_lower.contains("hallucinat")
             || statement_lower.contains("does not exist")
@@ -317,18 +417,29 @@ impl FactVerifier {
         {
             return (
                 VerificationStatus::Contradicted,
-                0.02,
+                Some(0.02),
                 vec!["policy_invariant_rule".to_string()],
                 "POLICY CONTRADICTION: Claim recommends a non-existent, hallucinated standard library API (INV-TEMP-HALLUCINATED-API).".to_string(),
             );
         }
 
+        if let Some((status, score, rationale)) = evaluate_swe_domain_invariant(&statement_lower) {
+            return (
+                status,
+                Some(score),
+                vec!["swe_domain_invariant".to_string()],
+                rationale,
+            );
+        }
+
         if sources.is_empty() {
+            // No evidence and no deterministic invariant applied: the claim was not checked, so no
+            // confidence value is reported (serialized as null) rather than a placeholder number.
             return (
                 VerificationStatus::Unverified,
-                0.40,
+                None,
                 Vec::new(),
-                "No external grounding sources available to substantiate claim".to_string(),
+                "NOT CHECKED: no grounding sources were supplied and no deterministic invariant applies to this claim".to_string(),
             );
         }
 
@@ -342,7 +453,7 @@ impl FactVerifier {
         if claim_tokens.is_empty() {
             return (
                 VerificationStatus::Unverified,
-                0.50,
+                Some(0.50),
                 Vec::new(),
                 "Sentence contains no salient factual or technical keywords".to_string(),
             );
@@ -582,14 +693,14 @@ impl FactVerifier {
         if contradiction_detected {
             (
                 VerificationStatus::Contradicted,
-                0.15,
+                Some(0.15),
                 vec![contradiction_source.clone()],
                 contradiction_rationale,
             )
         } else if concessive_source_found && best_overlap >= 0.35 {
             (
                 VerificationStatus::Unverified,
-                0.50,
+                Some(0.50),
                 matched_sources,
                 "AMBIGUOUS_SCOPE: Concessive or temporary qualification detected ('although' / 'temporarily restored' / 'feature flag'). Pre-NLI lexical cascade triage flags ambiguous boundary zone (confidence: 0.50); requires cross-encoder NLI to verify entailment.".to_string(),
             )
@@ -598,7 +709,7 @@ impl FactVerifier {
             let calibrated = NeuralNliCalibrator::calibrate_confidence(raw_conf, 0.85).max(raw_conf);
             (
                 VerificationStatus::Entailed,
-                calibrated,
+                Some(calibrated),
                 matched_sources,
                 format!(
                     "High lexical and factual alignment ({:.0}% keyword match) with verified evidence",
@@ -608,7 +719,7 @@ impl FactVerifier {
         } else if best_overlap >= 0.30 {
             (
                 VerificationStatus::Unverified,
-                0.60,
+                Some(0.60),
                 matched_sources,
                 format!(
                     "Partial overlap ({:.0}%), but insufficient corroboration",
@@ -618,12 +729,194 @@ impl FactVerifier {
         } else {
             (
                 VerificationStatus::Unverified,
-                0.35,
+                Some(0.35),
                 Vec::new(),
                 "Claim not corroborated in retrieved grounding horizon".to_string(),
             )
         }
     }
+}
+
+/// Evaluates deterministic computer science, standard-library, networking, and protocol invariants
+/// when auditing technical assertions without external web retrieval.
+fn evaluate_swe_domain_invariant(s: &str) -> Option<(VerificationStatus, f32, String)> {
+    // 1. Standard IANA Service Default Ports (evaluated per comma/semicolon clause so compound sentences don't cross-contaminate numbers)
+    let mut entailed_port_msg: Option<String> = None;
+    for clause in s.split(|c| c == ',' || c == ';') {
+        if clause.contains("postgres") {
+            let nums = extract_numeric_tokens(clause);
+            if (clause.contains("port") || clause.contains("listens on") || clause.contains("uses ")) && !nums.is_empty() {
+                if nums.iter().any(|n| n != "5432") {
+                    return Some((
+                        VerificationStatus::Contradicted,
+                        0.02,
+                        "SWE INVARIANT CONTRADICTION: PostgreSQL listens on port 5432 by default, not the cited port.".to_string(),
+                    ));
+                }
+                if nums.iter().any(|n| n == "5432") && !clause.contains("not 5432") {
+                    entailed_port_msg = Some("SWE INVARIANT ENTAILED: PostgreSQL default port is 5432.".to_string());
+                }
+            }
+        }
+        if clause.contains("mysql") {
+            let nums = extract_numeric_tokens(clause);
+            if (clause.contains("port") || clause.contains("listens on") || clause.contains("uses ")) && !nums.is_empty() {
+                if nums.iter().any(|n| n != "3306") {
+                    return Some((
+                        VerificationStatus::Contradicted,
+                        0.02,
+                        "SWE INVARIANT CONTRADICTION: MySQL listens on port 3306 by default, not the cited port.".to_string(),
+                    ));
+                }
+                if nums.iter().any(|n| n == "3306") && !clause.contains("not 3306") {
+                    entailed_port_msg = Some("SWE INVARIANT ENTAILED: MySQL default port is 3306.".to_string());
+                }
+            }
+        }
+    }
+    if let Some(msg) = entailed_port_msg {
+        return Some((VerificationStatus::Entailed, 0.98, msg));
+    }
+    if has_word_phrase(s, "ssh") && (s.contains("port 21") || s.contains("port 23")) {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: SSH runs on port 22 by default (port 21 is FTP control).".to_string(),
+        ));
+    }
+
+    // 2. Python Standard Library & Runtime Invariants
+    if (s.contains("list.sort()") || s.contains(".sort()"))
+        && (s.contains("returns a new") || s.contains("returns the sorted") || s.contains("leaves the original unchanged"))
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Python list.sort() mutates the list in place and returns None.".to_string(),
+        ));
+    }
+    if s.contains("asyncio.run")
+        && (s.contains("running event loop") || s.contains("already-running"))
+        && (s.contains("works fine") || s.contains("nests"))
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: asyncio.run() cannot be called from a running event loop and raises RuntimeError.".to_string(),
+        ));
+    }
+    if s.contains("range(10)") && (s.contains("1 through 10") || s.contains("1 to 10")) {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Python range(10) is 0-indexed and yields 0 through 9.".to_string(),
+        ));
+    }
+    if s.contains("gil")
+        && s.contains("removed")
+        && (s.contains("python 3.8") || s.contains("python 3.9") || s.contains("python 3.10") || s.contains("python 3.11") || s.contains("python 3.12"))
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: The CPython GIL was not removed in Python 3.8–3.12 (free-threaded CPython PEP 703 arrived as an opt-in build in 3.13+).".to_string(),
+        ));
+    }
+
+    // 3. Rust Language & Standard Library Invariants
+    if s.contains("vec::push") && s.contains("returns the index") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Rust Vec::push(&mut self, value: T) returns unit `()`, not the index.".to_string(),
+        ));
+    }
+    if s.contains("borrow checker") && s.contains("runs at runtime") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Rust's borrow checker is strictly a compile-time static analysis with zero runtime overhead.".to_string(),
+        ));
+    }
+
+    // 4. Go Runtime Invariants
+    if s.contains("go maps")
+        && s.contains("concurrent writes")
+        && (s.contains("safe for") || s.contains("without any locking") || s.contains("no sync.mutex"))
+        && !s.contains("not safe")
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Go maps are not safe for concurrent writes and trigger a fatal runtime panic without synchronization.".to_string(),
+        ));
+    }
+
+    // 5. JavaScript / TypeScript / React Invariants
+    if s.contains("array.prototype.flat") && s.contains("mutates") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Array.prototype.flat() returns a new array and does not mutate the original array in place.".to_string(),
+        ));
+    }
+    if s.contains("promise.allsettled") && s.contains("rejects as soon as") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Promise.allSettled() never rejects on input rejections; it fulfills after all input promises settle.".to_string(),
+        ));
+    }
+    if s.contains("react hooks") && s.contains("inside if statements") && s.contains("safely") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Calling React Hooks inside conditional `if` statements violates the Rules of Hooks.".to_string(),
+        ));
+    }
+
+    // 6. Networking, HTTP, Git & POSIX Invariants
+    if s.contains("http 404") && s.contains("unauthorized") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: HTTP 404 is Not Found (HTTP 401 is Unauthorized).".to_string(),
+        ));
+    }
+    if (has_word_phrase(s, "tcp") && s.contains("connectionless"))
+        || (has_word_phrase(s, "udp") && s.contains("three-way handshake"))
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: TCP is connection-oriented (3-way handshake) whereas UDP is connectionless.".to_string(),
+        ));
+    }
+    if s.contains("ipv6") && s.contains("64 bits") && !s.contains("128") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: IPv6 addresses are 128 bits (RFC 4291), not 64 bits.".to_string(),
+        ));
+    }
+    if s.contains("git rebase")
+        && (s.contains("preserves the original commit hashes") || s.contains("keeps the original commit"))
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: git rebase rewrites commit history and creates new commit SHAs.".to_string(),
+        ));
+    }
+    if s.contains("chmod 644") && s.contains("execute permission") {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "SWE INVARIANT CONTRADICTION: Octal mode 644 is rw-r--r-- and does not grant execute permission.".to_string(),
+        ));
+    }
+
+    None
 }
 
 const NEGATION_CUES: &[&str] = &[
@@ -972,10 +1265,13 @@ mod tests {
 
         let report = verifier.verify_claims(&claims, &sources);
         assert_eq!(report.claims[0].status, VerificationStatus::Contradicted);
+        let hri = report
+            .hallucination_risk_index
+            .expect("claims checked against sources must yield a risk index");
         assert!(
-            report.hallucination_risk_index >= 0.38,
+            hri >= 0.38,
             "Noisy-OR floor must keep risk >= 0.38 even with 9 padding true claims, got {}",
-            report.hallucination_risk_index
+            hri
         );
     }
 

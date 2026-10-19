@@ -56,7 +56,7 @@ fn test_adversarial_frontier_provider_hallucination() {
     assert_eq!(report.claims[0].status, VerificationStatus::Contradicted);
     assert!(report.claims[0].rationale.contains("OpenAI, NOT Google"));
     assert_eq!(report.contradicted_count, 1);
-    assert_eq!(report.hallucination_risk_index, 1.0);
+    assert_eq!(report.hallucination_risk_index, Some(1.0));
 }
 
 #[test]

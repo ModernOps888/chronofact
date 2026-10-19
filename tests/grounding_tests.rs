@@ -53,7 +53,7 @@ fn test_fact_verifier_entailment_and_contradiction() {
 
     assert_eq!(false_report.contradicted_count, 1);
     assert_eq!(false_report.claims[0].status, VerificationStatus::Contradicted);
-    assert!(false_report.hallucination_risk_index > 0.5);
+    assert!(false_report.hallucination_risk_index.expect("checked claims must yield a risk index") > 0.5);
 }
 
 #[test]
@@ -128,6 +128,9 @@ fn test_concessive_clause_ambiguity_triage() {
 
     // Concessive markers should prevent false-positive entailment and triage to unverified/ambiguous
     assert_ne!(report.claims[0].status, VerificationStatus::Entailed);
-    assert!(report.claims[0].confidence_score <= 0.70, "Confidence must be bounded under concessive clauses");
+    assert!(
+        report.claims[0].confidence_score.expect("claim checked against sources must carry a confidence") <= 0.70,
+        "Confidence must be bounded under concessive clauses"
+    );
 }
 

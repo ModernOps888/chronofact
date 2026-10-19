@@ -41,7 +41,8 @@ export interface AtomicClaim {
 export interface VerifiedClaim {
   claim: AtomicClaim;
   status: 'Entailed' | 'Contradicted' | 'Unverified';
-  confidence_score: number;
+  /** null when the claim was not checked against any source or invariant */
+  confidence_score: number | null;
   matched_source_ids: string[];
   rationale: string;
 }
@@ -51,7 +52,10 @@ export interface VerificationReport {
   entailed_count: number;
   contradicted_count: number;
   unverified_count: number;
-  hallucination_risk_index: number;
+  checked_claims_count?: number;
+  grounding_sources_available?: boolean;
+  /** null when no claim was checked against sources or invariants */
+  hallucination_risk_index: number | null;
   claims: VerifiedClaim[];
 }
 

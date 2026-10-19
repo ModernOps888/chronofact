@@ -198,3 +198,51 @@ pub fn list_tools() -> Value {
         ]
     })
 }
+
+/// Returns the `required` field names declared in `list_tools()` for `tool_name`.
+pub fn required_fields(tool_name: &str) -> Vec<String> {
+    list_tools()
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(tool_name))
+        })
+        .and_then(|t| t.get("inputSchema"))
+        .and_then(|s| s.get("required"))
+        .and_then(|r| r.as_array())
+        .map(|r| r.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Validates every schema-declared required field of `tool_name` up front and returns ONE error
+/// listing all fields that are absent, null, empty/whitespace-only, or not a string.
+pub fn validate_required_string_args(tool_name: &str, args: &Value) -> Result<(), String> {
+    let required = required_fields(tool_name);
+    let mut missing: Vec<String> = Vec::new();
+    let mut not_string: Vec<String> = Vec::new();
+    for field in &required {
+        match args.get(field) {
+            None | Some(Value::Null) => missing.push(field.clone()),
+            Some(Value::String(s)) if s.trim().is_empty() => missing.push(field.clone()),
+            Some(Value::String(_)) => {}
+            Some(_) => not_string.push(field.clone()),
+        }
+    }
+    if missing.is_empty() && not_string.is_empty() {
+        return Ok(());
+    }
+    let mut parts = Vec::new();
+    if !missing.is_empty() {
+        parts.push(format!("missing required field(s): {}", missing.join(", ")));
+    }
+    if !not_string.is_empty() {
+        parts.push(format!("field(s) must be non-empty strings: {}", not_string.join(", ")));
+    }
+    Err(format!(
+        "Invalid arguments for {}: {}. Required fields: {}.",
+        tool_name,
+        parts.join("; "),
+        required.join(", ")
+    ))
+}

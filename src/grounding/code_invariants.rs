@@ -105,7 +105,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects arbitrary code execution primitives (eval, exec, Invoke-Expression), shell injection, or unsanitized DOM rendering.".to_string(),
-                pattern: r#"(?:\beval\s*\(|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\(|\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True|\bInvoke-Expression\b|\biex\s+\$|\bset(?:Timeout|Interval)\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*[,)])"#.to_string(),
+                pattern: r#"(?:\beval\s*\(|\beval\s+["'$]|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\(|\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True|\bInvoke-Expression\b|\biex\s+\$|\bset(?:Timeout|Interval)\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*[,)])"#.to_string(),
                 remediation: "Avoid runtime string code evaluation; use parameterized argument arrays without shell=True and sanitize DOM nodes.".to_string(),
             },
             InvariantRule {
@@ -113,8 +113,8 @@ impl CodeInvariantChecker {
                 name: "Hardcoded API Key / Secret Token / Private Key".to_string(),
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
-                description: "Detects hardcoded high-entropy tokens, AWS keys, GitHub PATs, OpenRouter/OpenAI keys, JWTs, or PEM private keys.".to_string(),
-                pattern: r#"(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36}|sk-(?:or-v1-)?[a-zA-Z0-9]{32,}|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----|(?i)(?:api_key|secret_key|private_key|auth_token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["'])"#.to_string(),
+                description: "Detects hardcoded high-entropy tokens, AWS keys, GitHub PATs, Stripe/OpenRouter/OpenAI keys, JWTs, or PEM private keys.".to_string(),
+                pattern: r#"(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36}|sk-(?:or-v1-)?[a-zA-Z0-9]{32,}|\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{20,}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----|(?i)(?:api_key|secret_key|private_key|auth_token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["'])"#.to_string(),
                 remediation: "Extract secrets into secure environment variables, cloud secrets vaults, or KMS.".to_string(),
             },
             InvariantRule {
@@ -149,8 +149,8 @@ impl CodeInvariantChecker {
                 name: "Presentation Layer Direct Database Access".to_string(),
                 category: "Architecture".to_string(),
                 severity: InvariantSeverity::High,
-                description: "Detects direct database client imports within client/presentation layer files.".to_string(),
-                pattern: r#"(?i)(?:import.*from\s*["'](?:rusqlite|@prisma/client|mysql2|pg|typeorm|mongoose|better-sqlite3)["']|use\s+(?:rusqlite|sqlx|diesel)::)"#.to_string(),
+                description: "Detects direct database client imports or raw connection calls within client/presentation/controller layer files.".to_string(),
+                pattern: r#"(?i)(?:import.*from\s*["'](?:rusqlite|@prisma/client|mysql2(?:/promise)?|pg|typeorm|mongoose|better-sqlite3)["']|require\s*\(\s*["'](?:rusqlite|@prisma/client|mysql2(?:/promise)?|pg|typeorm|mongoose|better-sqlite3)["']\)|use\s+(?:rusqlite|sqlx|diesel)::|\bpsycopg2\.connect\s*\(|\bsqlite3\.connect\s*\(|\bmysql\.createConnection\s*\()"#.to_string(),
                 remediation: "Route database calls through domain services, repository interfaces, or API gateway endpoints.".to_string(),
             },
             InvariantRule {
@@ -158,9 +158,9 @@ impl CodeInvariantChecker {
                 name: "Deprecated / EOL Dependency, Retired AI Model, or Vendor Misattribution".to_string(),
                 category: "TemporalDeprecation".to_string(),
                 severity: InvariantSeverity::High,
-                description: "Detects sunsetted libraries (moment, request, ioutil.ReadAll), retired pre-2026 AI model IDs, or vendor misattributions.".to_string(),
-                pattern: r#"(?:from\s*["'](?:moment|request|urllib3)["']|require\(["'](?:moment|request)["']\)|\bioutil\.(?:ReadAll|ReadFile|WriteFile|TempDir|TempFile)\b|(?i)["'](?:claude-3-5-(?:sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-(?:opus|sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-7-sonnet(?:-\d{8}|-latest)?|gpt-4-(?:0613|0314|turbo-preview|1106-preview)|text-davinci-00[23]|grok-[23](?:-mini|-latest)?|(?:google|anthropic)/(?:astra-6|sol-6\.1))["'])"#.to_string(),
-                remediation: "Replace with active 2026 standards: moment -> date-fns/Luxon; request -> fetch/reqwest; ioutil -> io/os; retired models -> claude-sonnet-5-5 / claude-opus-5-5 / openai/gpt-6-astra / google/gemini-4-argon / x-ai/grok-4.7.".to_string(),
+                description: "Detects sunsetted libraries (moment, request, distutils, new Buffer, ioutil.ReadAll), retired pre-2026 AI model IDs, or vendor misattributions.".to_string(),
+                pattern: r#"(?:from\s*["'](?:moment|request|urllib3)["']|require\(["'](?:moment|request)["']\)|\bfrom\s+distutils\b|\bimport\s+distutils\b|\bnew\s+Buffer\s*\(|\bioutil\.(?:ReadAll|ReadFile|WriteFile|TempDir|TempFile)\b|(?i)["'](?:claude-3-5-(?:sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-(?:opus|sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-7-sonnet(?:-\d{8}|-latest)?|gpt-4-(?:0613|0314|turbo-preview|1106-preview)|text-davinci-00[23]|grok-[23](?:-mini|-latest)?|(?:google|anthropic)/(?:astra-6|sol-6\.1))["'])"#.to_string(),
+                remediation: "Replace with active 2026 standards: moment -> date-fns/Luxon; request -> fetch/reqwest; distutils -> setuptools; new Buffer -> Buffer.from; ioutil -> io/os; retired models -> claude-sonnet-5-5 / claude-opus-5-5 / openai/gpt-6-astra / google/gemini-4-argon / x-ai/grok-4.7.".to_string(),
             },
             InvariantRule {
                 id: "INV-TEMP-HALLUCINATED-API".to_string(),
@@ -186,7 +186,7 @@ impl CodeInvariantChecker {
                 category: "Reliability".to_string(),
                 severity: InvariantSeverity::Medium,
                 description: "Detects empty catch/except blocks or discarded Results that hide runtime crashes.".to_string(),
-                pattern: r#"(?:catch\s*\([a-zA-Z0-9_]*\)\s*\{\s*\}|except(?:\s+Exception)?\s*:\s*pass\b|let\s+_\s*=\s*(?:std::fs|tokio::fs|rusqlite))"# .to_string(),
+                pattern: r#"(?:catch\s*\([^)]*\)\s*\{\s*\}|except(?:\s+[a-zA-Z0-9_.,\s]+)?\s*:\s*pass\b|let\s+_\s*=\s*(?:std::fs|tokio::fs|rusqlite))"# .to_string(),
                 remediation: "Log errors with structured context or propagate with explicit error types.".to_string(),
             },
             InvariantRule {
@@ -194,9 +194,9 @@ impl CodeInvariantChecker {
                 name: "Blocking Thread Sleep / Sync I/O Inside Async Runtime".to_string(),
                 category: "Reliability".to_string(),
                 severity: InvariantSeverity::Medium,
-                description: "Detects std::thread::sleep or synchronous child_process.execSync calls that starve async Tokio/Node worker threads.".to_string(),
-                pattern: r#"(?:\bstd::thread::sleep\s*\(|\bchild_process\.execSync\s*\()"#.to_string(),
-                remediation: "Use tokio::time::sleep in async Rust or async child_process.execFile / spawn in Node.js.".to_string(),
+                description: "Detects std::thread::sleep, Python time.sleep inside async def, or synchronous child_process.execSync calls that starve async worker threads.".to_string(),
+                pattern: r#"(?:\bstd::thread::sleep\s*\(|\btime\.sleep\s*\(|\bchild_process\.execSync\s*\()"#.to_string(),
+                remediation: "Use tokio::time::sleep in async Rust, asyncio.sleep in async Python, or async child_process.execFile / spawn in Node.js.".to_string(),
             },
         ];
 
@@ -233,14 +233,59 @@ impl CodeInvariantChecker {
         let total_rules = self.built_in_rules.len() + compiled_custom.len();
         let mut violations = Vec::new();
 
-        // Special check: Architecture DAL leak only triggers on client/frontend/ui paths
-        // Path-segment match (not substring): "build/guide.rs" or "quiz.rs" must not count as UI code.
-        let is_frontend_path = file_path
-            .to_lowercase()
-            .split(|c| c == '/' || c == '\\')
-            .any(|seg| matches!(seg, "frontend" | "client" | "ui" | "components" | "pages" | "app" | "views" | "src-ui"));
+        // Special check: Architecture DAL leak only triggers on client/frontend/ui/controller paths,
+        // and is suppressed if an explicit header comment declares a DAL/db/repository file.
+        let header_lower = lines
+            .iter()
+            .take(3)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let is_explicit_dal_header = header_lower.contains("src/db/")
+            || header_lower.contains("data-access layer")
+            || header_lower.contains("repository layer");
+        let is_frontend_path = !is_explicit_dal_header
+            && (file_path
+                .to_lowercase()
+                .split(|c| c == '/' || c == '\\')
+                .any(|seg| {
+                    matches!(
+                        seg,
+                        "frontend"
+                            | "client"
+                            | "ui"
+                            | "components"
+                            | "pages"
+                            | "app"
+                            | "views"
+                            | "controllers"
+                            | "src-ui"
+                    )
+                })
+                || header_lower.contains("views/")
+                || header_lower.contains("controllers/")
+                || header_lower.contains("presentation layer"));
 
         let has_any_fn_decl = content.contains("fn ") || content.contains("function ") || content.contains("def ");
+        let content_lower = content.to_lowercase();
+        let has_ssrf_allowlist = content_lower.contains("allowed_hosts")
+            || content_lower.contains("allowlist")
+            || content_lower.contains("whitelist")
+            || content_lower.contains("urlparse");
+        let has_untrusted_url_param = content.contains("request.args[")
+            || content.contains("request.args.get(")
+            || content.contains("req.query.")
+            || content.contains("req.params.")
+            || content.contains("r.URL.Query()");
+        let has_dompurify = content.contains("DOMPurify.sanitize") || content.contains("sanitizeHtml(");
+        let has_spawn_blocking = content.contains("spawn_blocking")
+            || content.contains("run_in_executor")
+            || content.contains("asyncio.to_thread");
+        let has_sql_table_allowlist = content.contains("TABLES = {")
+            || content.contains("ALLOWED_TABLES")
+            || content.contains("VALID_TABLES");
+
         let mut in_block_comment = false;
         let mut in_py_docstring = false;
         let mut in_async_scope = !has_any_fn_decl;
@@ -306,13 +351,16 @@ impl CodeInvariantChecker {
 
             // Track async vs synchronous function scope for INV-REL-ASYNC-BLOCKING
             if trimmed.contains("async fn ")
+                || trimmed.contains("async def ")
                 || trimmed.contains("async move")
                 || trimmed.contains("async {")
                 || trimmed.contains("async function ")
                 || trimmed.starts_with("#[tokio::")
             {
                 in_async_scope = true;
-            } else if (trimmed.starts_with("pub fn ") || trimmed.starts_with("fn "))
+            } else if (trimmed.starts_with("pub fn ")
+                || trimmed.starts_with("fn ")
+                || trimmed.starts_with("def "))
                 && !trimmed.contains("async ")
             {
                 in_async_scope = false;
@@ -323,11 +371,40 @@ impl CodeInvariantChecker {
                     continue; // Skip DAL leak check on backend files
                 }
 
-                if rule.id == "INV-REL-ASYNC-BLOCKING"
-                    && line.contains("std::thread::sleep")
-                    && !in_async_scope
+                if rule.id == "INV-REL-ASYNC-BLOCKING" {
+                    if has_spawn_blocking {
+                        continue; // Blocking sleep inside spawn_blocking / run_in_executor is legitimate
+                    }
+                    if line.contains("std::thread::sleep") && !in_async_scope {
+                        continue; // Legitimate synchronous sleep inside non-async function
+                    }
+                    if line.contains("time.sleep") && (!in_async_scope || !content.contains("async def ")) {
+                        continue; // Legitimate synchronous Python script sleep
+                    }
+                }
+
+                if rule.id == "INV-SEC-EVAL-EXEC"
+                    && line.contains("dangerouslySetInnerHTML")
+                    && has_dompurify
                 {
-                    continue; // Legitimate synchronous sleep inside non-async function
+                    continue; // Sanitized via DOMPurify before rendering
+                }
+
+                if rule.id == "INV-SEC-RAW-SQL" {
+                    let t_lower = trimmed.to_lowercase();
+                    let is_log_or_print = t_lower.starts_with("print(")
+                        || t_lower.starts_with("logger.")
+                        || t_lower.starts_with("logging.")
+                        || t_lower.starts_with("log.")
+                        || t_lower.starts_with("console.log(")
+                        || t_lower.starts_with("println!(")
+                        || t_lower.contains("select returned ");
+                    if is_log_or_print {
+                        continue;
+                    }
+                    if has_sql_table_allowlist && trimmed.contains("{table}") && !trimmed.contains("WHERE") {
+                        continue; // Fixed allow-list table identifier interpolation
+                    }
                 }
 
                 if rule.id == "INV-SEC-HARDCODED-SECRET" {
@@ -352,6 +429,34 @@ impl CodeInvariantChecker {
                     if regex.is_match(&joined) {
                         matched = true;
                         sql_window_skip_until = end_idx + 1;
+                    }
+                }
+
+                if !matched
+                    && rule.id == "INV-SEC-SSRF-UNCHECKED"
+                    && has_untrusted_url_param
+                    && !has_ssrf_allowlist
+                    && (trimmed.contains("requests.get(")
+                        || trimmed.contains("requests.post(")
+                        || trimmed.contains("fetch(")
+                        || trimmed.contains("http.Get(")
+                        || trimmed.contains("reqwest::get("))
+                {
+                    matched = true;
+                }
+
+                if !matched && rule.id == "INV-ERR-SILENT-FAIL" {
+                    let next_trimmed = lines.get(idx + 1).map(|s| s.trim()).unwrap_or("");
+                    if trimmed.starts_with("except")
+                        && trimmed.ends_with(':')
+                        && (next_trimmed == "pass" || next_trimmed == "...")
+                    {
+                        matched = true;
+                    } else if trimmed.contains("catch")
+                        && trimmed.ends_with('{')
+                        && next_trimmed == "}"
+                    {
+                        matched = true;
                     }
                 }
 

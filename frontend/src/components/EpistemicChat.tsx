@@ -122,7 +122,7 @@ export const EpistemicChat: React.FC<Props> = ({
                   >
                     <span className="flex items-center gap-2">
                       <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                      Verification Telemetry: {m.telemetry.verification_report.entailed_count} Verified Claims • Hallucination Risk: {(m.telemetry.verification_report.hallucination_risk_index * 100).toFixed(0)}%
+                      Verification Telemetry: {m.telemetry.verification_report.entailed_count} Verified Claims • Hallucination Risk: {m.telemetry.verification_report.hallucination_risk_index == null ? 'N/A (no evidence)' : `${(m.telemetry.verification_report.hallucination_risk_index * 100).toFixed(0)}%`}
                     </span>
                     {expandedTelemetry === idx ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                   </button>

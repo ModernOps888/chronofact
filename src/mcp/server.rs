@@ -636,7 +636,7 @@ impl McpServer {
                                     category: crate::grounding::ClaimCategory::TechnicalApi,
                                 },
                                 status: crate::grounding::VerificationStatus::Contradicted,
-                                confidence_score: 0.01,
+                                confidence_score: Some(0.01),
                                 matched_source_ids: vec![v.rule_id.clone()],
                                 rationale: format!(
                                     "CODE INVARIANT VIOLATION [{} / {}]: {} Remediation: {}",
@@ -649,25 +649,24 @@ impl McpServer {
                         }
                     }
                     if report.total_claims > 0 {
-                        let linear_risk = ((report.contradicted_count as f32 * 1.0)
-                            + (report.unverified_count as f32 * 0.4))
-                            / (report.total_claims as f32);
-                        let noisy_or_floor = if report.contradicted_count > 0 {
-                            1.0 - (1.0 - 0.38_f32).powi(report.contradicted_count as i32)
-                        } else {
-                            0.0
-                        };
-                        report.hallucination_risk_index =
-                            ((linear_risk.max(noisy_or_floor).min(1.0)) * 100.0).round() / 100.0;
+                        report.recompute_checked_risk();
+                        report.hallucination_risk_index = report
+                            .hallucination_risk_index
+                            .map(|r| (r * 100.0).round() / 100.0);
                     }
                 }
 
                 let now_ts = chrono::Utc::now().to_rfc3339();
                 let intervention = if report.contradicted_count > 0 {
                     "CONTRADICTION_INTERCEPTED".to_string()
+                } else if report.hallucination_risk_index.is_none() {
+                    // Nothing was checked (no sources, no invariant hit). The ledger column is a
+                    // NOT NULL REAL, so 0.0 is stored and this intervention type marks it as no-evidence.
+                    "CLAIM_VERIFICATION_NO_EVIDENCE".to_string()
                 } else {
                     "CLAIM_VERIFICATION".to_string()
                 };
+                let ledger_risk = report.hallucination_risk_index.unwrap_or(0.0);
 
                 let drift_event = DriftEvent {
                     id: 0,
@@ -676,16 +675,24 @@ impl McpServer {
                     model_id: "claim-verifier".to_string(),
                     query: response_text.to_string(),
                     days_post_freeze: 0,
-                    temporal_risk_score: report.hallucination_risk_index,
+                    temporal_risk_score: ledger_risk,
                     outdated_topics_caught: format!(
                         "Audited {} claims (Entailed: {}, Contradicted: {}, Unverified: {})",
                         report.total_claims, report.entailed_count, report.contradicted_count, report.unverified_count
                     ),
                     intervention_type: intervention.clone(),
                     ground_truth_retrieved: if report.contradicted_count > 0 {
-                        format!("CONTRADICTION DETECTED: Hallucination risk {:.0}%", report.hallucination_risk_index * 100.0)
+                        format!("CONTRADICTION DETECTED: Hallucination risk {:.0}%", ledger_risk * 100.0)
+                    } else if report.hallucination_risk_index.is_none() {
+                        format!(
+                            "No evidence: {} claims not checked (no grounding sources supplied, no invariant applied)",
+                            report.total_claims
+                        )
                     } else {
-                        format!("Verified {} claims against active evidence sources", report.total_claims)
+                        format!(
+                            "Checked {} of {} claims (grounding sources available: {})",
+                            report.checked_claims_count, report.total_claims, report.grounding_sources_available
+                        )
                     },
                 };
                 let _ = self.memory.record_drift_event(&drift_event);
@@ -718,7 +725,7 @@ impl McpServer {
                     contradicted_claims_json: serde_json::to_string(&contradicted_vec).unwrap_or_else(|_| "[]".to_string()),
                     unverified_claims_json: serde_json::to_string(&unverified_vec).unwrap_or_else(|_| "[]".to_string()),
                     source_evidence_json: serde_json::to_string(&sources).unwrap_or_else(|_| "[]".to_string()),
-                    hallucination_risk_index: report.hallucination_risk_index,
+                    hallucination_risk_index: ledger_risk,
                     intervention_type: intervention,
                 };
                 let _ = self.memory.record_epistemic_trajectory(&trajectory);
@@ -744,7 +751,7 @@ impl McpServer {
                                 } else {
                                     evidence_summary.clone()
                                 },
-                                reward_score: vc.confidence_score,
+                                reward_score: vc.confidence_score.unwrap_or(0.0),
                             });
                         }
                         crate::grounding::VerificationStatus::Contradicted => {
@@ -771,10 +778,13 @@ impl McpServer {
                 Ok(json!(report))
             }
             "chronofact_memory_save" => {
-                let project_id = args.get("project_id").and_then(|v| v.as_str()).ok_or("Missing project_id")?;
-                let entity_name = args.get("entity_name").and_then(|v| v.as_str()).ok_or("Missing entity_name")?;
-                let entity_type = args.get("entity_type").and_then(|v| v.as_str()).ok_or("Missing entity_type")?;
-                let definition = args.get("definition").and_then(|v| v.as_str()).ok_or("Missing definition")?;
+                // Report every missing/invalid required field at once (schema-driven).
+                tools::validate_required_string_args("chronofact_memory_save", args)?;
+                let field = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+                let project_id = field("project_id");
+                let entity_name = field("entity_name");
+                let entity_type = field("entity_type");
+                let definition = field("definition");
                 let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
 
                 let entity = ProjectEntity {
@@ -1240,11 +1250,9 @@ impl McpServer {
             };
             let claims = self.extractor.extract_claims(&result_str);
             if !claims.is_empty() {
-                let mut report = self.verifier.verify_claims(&claims, &[]);
-                if report.contradicted_count == 0 {
-                    report.hallucination_risk_index = 0.0;
-                }
-                Some(report)
+                // No sources here: hallucination_risk_index is computed over invariant-checked claims
+                // only (0.0 if none contradicted) and is null when no claim could be checked.
+                Some(self.verifier.verify_claims(&claims, &[]))
             } else {
                 None
             }

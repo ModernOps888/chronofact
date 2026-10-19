@@ -33,8 +33,8 @@ impl TemporalScanner {
         Self {
             year_regex: Regex::new(r"\b(20[2-3][0-9])\b").unwrap(),
             version_regex: Regex::new(r"\bv?(\d+\.\d+(\.\d+)?(-[a-zA-Z0-9.]+)?)\b").unwrap(),
-            keyword_regex: Regex::new(r"(?i)\b(latest|newest|recently|current|this year|last month|changelog|roadmap|release[ds]?|deprecat(ed|ion)?|breaking change[s]?|what'?s new|what is new|new features?|knowledge cutoff|cutoff|training freeze|weight freeze|context window|computer use)\b").unwrap(),
-            tech_entity_regex: Regex::new(r"(?i)\b(claude|gpt-?[456o]?|gemini(-?[34](\.[0-9])?(-?(flash|pro|ultra|argon))?)?|argon|astra(-?6)?|astr(-?6)?|sol(-?6(\.1)?)?|deepseek|llama|opus(-?5(\.5)?)?|sonnet(-?5(\.5)?)?|haiku|grok(-?[1234](\.[0-9])?)?|xai|openai|anthropic|deepmind|meta|o[134](-mini)?|react|next\.?js|vite|rust|cargo|tokio|axum|actix|serde|reqwest|sqlx|diesel|polars|tauri|bevy|tracing|clap|python|pip|uv|pydantic|fastapi|django|flask|torch|pytorch|tensorflow|numpy|pandas|scipy|scikit-learn|langchain|llamaindex|transformers|huggingface|celery|sqlalchemy|alembic|node\.?js|typescript|javascript|bun|deno|tailwind|kubernetes|docker|fastapi|astro|arxiv|biorxiv|swe-bench|mmlu|gpqa|sota|benchmark|rlhf|dpo|grpo|zig|svelte(kit)?|vue|angular|nuxt|remix|solid-?js|htmx|drizzle|prisma|zod|vitest|jest|playwright|cypress|golang|kotlin|swift(ui)?|flutter|dart|elixir|laravel|rails|spring boot|terraform|ansible|postgres(ql)?|redis|valkey|mongodb|kafka|nginx|webpack|esbuild|rollup|eslint|biome|turbopack|rspack|hono|fastify|ollama|langgraph|go\s?1\.\d{1,2}(\.\d+)?)\b").unwrap(),
+            keyword_regex: Regex::new(r"(?i)\b(latest|newest|recently|current|this year|this quarter|last month|(?:in the )?last few (?:days|weeks|months)|changelog|roadmap|release[ds]?|ship(?:ped)? yet|started yet|landed|announced|disclosed|cve[s]?|beta|stable version|next edition|default now|enforcement|deprecat(ed|ion)?|breaking change[s]?|what'?s new|what is new|new features?|knowledge cutoff|cutoff|training freeze|weight freeze|context window|computer use)\b").unwrap(),
+            tech_entity_regex: Regex::new(r"(?i)\b(claude|gpt-?[456o]?|gemini(-?[34](\.[0-9])?(-?(flash|pro|ultra|argon))?)?|argon|astra(-?6)?|astr(-?6)?|sol(-?6(\.1)?)?|deepseek|llama|opus(-?5(\.5)?)?|sonnet(-?5(\.5)?)?|haiku|grok(-?[1234](\.[0-9])?)?|xai|openai|anthropic|deepmind|meta|o[134](-mini)?|react|next\.?js|vite|rust|rustc|rustup|cargo|tokio|axum|actix|serde|reqwest|sqlx|diesel|polars|tauri|bevy|tracing|clap|python|pip|uv|pydantic|fastapi|django|flask|torch|pytorch|tensorflow|numpy|pandas|scipy|scikit-learn|langchain|llamaindex|transformers|huggingface|celery|sqlalchemy|alembic|node\.?js|typescript|javascript|bun|deno|tailwind|kubernetes|docker|astro|arxiv|biorxiv|swe-bench|mmlu|gpqa|sota|benchmark|rlhf|dpo|grpo|zig|svelte(kit)?|vue|angular|nuxt|remix|solid-?js|htmx|drizzle|prisma|zod|vitest|jest|playwright|cypress|golang|kotlin|swift(ui)?|flutter|dart|elixir|laravel|rails|spring boot|terraform|ansible|postgres(ql)?|redis|valkey|mongodb|kafka|nginx|openssl|ubuntu|eu ai act|webpack|esbuild|rollup|eslint|biome|turbopack|rspack|hono|fastify|ollama|langgraph|go\s?1\.\d{1,2}(\.\d+)?)\b").unwrap(),
             outdated_model_regex: Regex::new(r"(?i)\b(claude(-|\s)?3([.-][57])?(-|\s)?(sonnet|haiku|opus)|sonnet(-|\s)?3([.-][57])|opus(-|\s)?3|grok(-|\s)?[123](\.0|\.5)?|gpt(-|\s)?4(o|-turbo|-mini)?)\b").unwrap(),
             software_intent_regex: Regex::new(r"(?i)\b(how to|how do i|implement|best practice|pattern|architecture|setup|config|migration|migrate|migrating|upgrading|installing|breaking change|upgrade|install|dependency|package|crate|library|framework|module|api|sdk|cli|vendor|owner|who made|who developed)\b").unwrap(),
         }
@@ -197,12 +197,22 @@ impl TemporalScanner {
             score += 0.50;
         }
 
-        // Recent years boost score (2025+ strongly boosts; 2024 mildly boosts unless combined with entities/keywords)
-        for &yr in &mentioned_years {
-            if yr >= 2025 {
-                score += 0.35;
-            } else if yr == 2024 {
-                score += 0.15;
+        // Recent years boost score (unless the prompt is a static data-sorting task on ISO date literals
+        // with zero tech entities and zero temporal keywords).
+        let is_static_date_literal_task = detected_entities.is_empty()
+            && temporal_keywords.is_empty()
+            && outdated_models_flagged.is_empty()
+            && (query_lower.starts_with("sort ")
+                || query_lower.starts_with("format ")
+                || query_lower.contains("invoice dates"));
+
+        if !is_static_date_literal_task {
+            for &yr in &mentioned_years {
+                if yr >= 2025 {
+                    score += 0.35;
+                } else if yr == 2024 {
+                    score += 0.15;
+                }
             }
         }
 
