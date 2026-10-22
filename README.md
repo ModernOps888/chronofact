@@ -6,9 +6,6 @@
 [![CI Tests: 124/124 Passed](https://img.shields.io/badge/ci%20tests-124%2F124%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
 [![MCP Protocol v1](https://img.shields.io/badge/mcp-compliant-purple.svg)](https://modelcontextprotocol.io)
-[![Enterprise-Audits](https://img.shields.io/badge/Enterprise-Security_Audits-ff00e5.svg)](https://infinitytechstack.uk/consulting)
-
-> ⚡ **Enterprise Agent Audits & Token Cost Optimization**: Slashing agent prompt token bloat by 90.9% and preventing epistemic drift in production. We deliver **fixed-scope, 3-day agent security audits** (£4,500) and **sovereign AI architecture advisory** (£650–£7,500). [**Explore Packages & Inquire →**](https://infinitytechstack.uk/consulting)
 
 ---
 
