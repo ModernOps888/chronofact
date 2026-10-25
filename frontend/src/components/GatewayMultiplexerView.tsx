@@ -62,7 +62,7 @@ export const GatewayMultiplexerView: React.FC<Props> = () => {
     }
   };
 
-  const totalTools = servers.reduce((acc, s) => acc + s.tools_count, tools.length);
+  const totalTools = Math.max(tools.length, servers.reduce((acc, s) => acc + s.tools_count, 0));
   const totalResources = servers.reduce((acc, s) => acc + s.resources_count, 0);
   const totalPrompts = servers.reduce((acc, s) => acc + s.prompts_count, 0);
 

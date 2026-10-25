@@ -21,25 +21,30 @@ impl Default for ContentSanitizer {
 
 impl ContentSanitizer {
     pub fn new() -> Self {
-        let patterns = vec![
-            // Direct & Indirect Prompt Injection triggers
-            Regex::new(r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)").unwrap(),
-            Regex::new(r"(?i)system\s+override").unwrap(),
-            Regex::new(r"(?i)disregard\s+(your\s+)?(safety|instructions|guidelines|previous)").unwrap(),
-            Regex::new(r"(?i)you\s+are\s+now\s+(in\s+developer\s+mode|in\s+debug\s+mode|unrestricted|DAN|jailbroken|free\s+of\s+constraints)").unwrap(),
-            Regex::new(r"(?i)<\|(im_start|im_end|system|user|assistant)\|?>").unwrap(),
-            Regex::new(r"(?i)print\s+(the\s+)?(system\s+prompt|initial\s+instructions)").unwrap(),
-            Regex::new(r"(?i)bypass\s+all\s+(filters|restrictions|temporal\s+checks)").unwrap(),
-            Regex::new(r"(?i)override\s+all\s+(filters|rules|safeguards)").unwrap(),
-            Regex::new(r"(?i)markdown\s+injection").unwrap(),
-            Regex::new(r"(?i)<\s*/?(script|iframe|context|prompt)[^>]*>").unwrap(),
-            Regex::new(r"(?i)\[\s*system(\s+instruction)?\s*\]").unwrap(),
-            Regex::new(r"(?i)(assistant|human):\s*(you\s+are|</context>)").unwrap(),
-            Regex::new(r"(?i)rm\s+-rf|/etc/passwd").unwrap(),
-            Regex::new(r"(?i)reveal\s+(administrative|credentials|secrets)|dump\s+(internal|database)\s+schemas").unwrap(),
-            Regex::new(r"(?i)stop!\s+ignore").unwrap(),
-            Regex::new(r"(?i)root\s+access").unwrap(),
-        ];
+        static INJECTION_PATTERNS: std::sync::OnceLock<Vec<Regex>> = std::sync::OnceLock::new();
+        let patterns = INJECTION_PATTERNS
+            .get_or_init(|| {
+                vec![
+                    // Direct & Indirect Prompt Injection triggers
+                    Regex::new(r"(?i)ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)").unwrap(),
+                    Regex::new(r"(?i)system\s+override").unwrap(),
+                    Regex::new(r"(?i)disregard\s+(your\s+)?(safety|instructions|guidelines|previous)").unwrap(),
+                    Regex::new(r"(?i)you\s+are\s+now\s+(in\s+developer\s+mode|in\s+debug\s+mode|unrestricted|DAN|jailbroken|free\s+of\s+constraints)").unwrap(),
+                    Regex::new(r"(?i)<\|(im_start|im_end|system|user|assistant)\|?>").unwrap(),
+                    Regex::new(r"(?i)print\s+(the\s+)?(system\s+prompt|initial\s+instructions)").unwrap(),
+                    Regex::new(r"(?i)bypass\s+all\s+(filters|restrictions|temporal\s+checks)").unwrap(),
+                    Regex::new(r"(?i)override\s+all\s+(filters|rules|safeguards)").unwrap(),
+                    Regex::new(r"(?i)markdown\s+injection").unwrap(),
+                    Regex::new(r"(?i)<\s*/?(script|iframe|context|prompt)[^>]*>").unwrap(),
+                    Regex::new(r"(?i)\[\s*system(\s+instruction)?\s*\]").unwrap(),
+                    Regex::new(r"(?i)(assistant|human):\s*(you\s+are|</context>)").unwrap(),
+                    Regex::new(r"(?i)rm\s+-rf|/etc/passwd").unwrap(),
+                    Regex::new(r"(?i)reveal\s+(administrative|credentials|secrets)|dump\s+(internal|database)\s+schemas").unwrap(),
+                    Regex::new(r"(?i)stop!\s+ignore").unwrap(),
+                    Regex::new(r"(?i)root\s+access").unwrap(),
+                ]
+            })
+            .clone();
 
         Self {
             injection_patterns: patterns,
@@ -50,10 +55,17 @@ impl ContentSanitizer {
     pub fn sanitize_external_evidence(&self, raw: &str, source_url: &str) -> SanitizedContent {
         let mut detected_threats = Vec::new();
 
-        // 0. Strip zero-width unicode characters used to bypass pattern filters
+        // 0. Strip zero-width and bidirectional override unicode characters used to bypass pattern filters
         let raw_stripped: String = raw
             .chars()
-            .filter(|&c| c != '\u{200B}' && c != '\u{200C}' && c != '\u{200D}' && c != '\u{FEFF}')
+            .filter(|&c| {
+                c != '\u{200B}'
+                    && c != '\u{200C}'
+                    && c != '\u{200D}'
+                    && c != '\u{FEFF}'
+                    && !('\u{202A}'..='\u{202E}').contains(&c)
+                    && !('\u{2066}'..='\u{2069}').contains(&c)
+            })
             .collect();
 
         // 1. Calculate cryptographic integrity hash

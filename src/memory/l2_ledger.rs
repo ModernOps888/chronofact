@@ -151,7 +151,8 @@ impl EpisodicLedger {
         )?;
 
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
+            "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
+             CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
              CREATE INDEX IF NOT EXISTS idx_drift_events_project ON drift_events(project_id);
              CREATE INDEX IF NOT EXISTS idx_cost_events_ts ON cost_events(timestamp);
              CREATE INDEX IF NOT EXISTS idx_epistemic_trajectories_project ON epistemic_trajectories(project_id);

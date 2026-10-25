@@ -599,24 +599,112 @@ impl McpServer {
                 }))
             }
             "chronofact_verify_claims" => {
-                let response_text = args
+                let raw_text_val = args
                     .get("response_text")
                     .or_else(|| args.get("claim"))
+                    .or_else(|| args.get("claims"))
+                    .or_else(|| args.get("statement"))
+                    .or_else(|| args.get("statements"))
+                    .or_else(|| args.get("assertion"))
+                    .or_else(|| args.get("assertions"))
+                    .or_else(|| args.get("text"))
                     .or_else(|| args.get("prompt"))
                     .or_else(|| args.get("content"))
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing response_text")?;
-                let sources: Vec<crate::research::SourceChunk> = if let Some(arr) = args.get("sources") {
-                    serde_json::from_value(arr.clone()).map_err(|e| format!("Invalid 'sources' schema (expected [{{id,title,url,content}}]): {}", e))?
+                    .or_else(|| args.get("draft_response"))
+                    .or_else(|| args.get("query"));
+
+                let response_text_owned: String = match raw_text_val {
+                    Some(v) if v.is_string() => v.as_str().unwrap_or_default().to_string(),
+                    Some(v) if v.is_array() => {
+                        let joined = v
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .filter_map(|item| item.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if joined.is_empty() {
+                            return Err("Missing response_text".to_string());
+                        }
+                        joined
+                    }
+                    _ => return Err("Missing response_text".to_string()),
+                };
+                let response_text = response_text_owned.as_str();
+
+                let raw_sources = args
+                    .get("sources")
+                    .or_else(|| args.get("grounding_sources"))
+                    .or_else(|| args.get("evidence"));
+                let sources: Vec<crate::research::SourceChunk> = if let Some(arr_val) = raw_sources {
+                    if let Ok(parsed) = serde_json::from_value::<Vec<crate::research::SourceChunk>>(arr_val.clone()) {
+                        parsed
+                    } else if let Some(arr) = arr_val.as_array() {
+                        arr.iter()
+                            .enumerate()
+                            .filter_map(|(idx, item)| {
+                                if let Some(s) = item.as_str() {
+                                    Some(crate::research::SourceChunk {
+                                        id: format!("S{}", idx + 1),
+                                        title: format!("Source {}", idx + 1),
+                                        url: "mcp://inline-source".to_string(),
+                                        content: s.to_string(),
+                                        integrity_hash: String::new(),
+                                        is_sanitized: true,
+                                    })
+                                } else if let Some(obj) = item.as_object() {
+                                    let content = obj
+                                        .get("content")
+                                        .or_else(|| obj.get("text"))
+                                        .or_else(|| obj.get("snippet"))
+                                        .and_then(|v| v.as_str())?;
+                                    let id = obj
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| format!("S{}", idx + 1));
+                                    let title = obj
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Inline Evidence")
+                                        .to_string();
+                                    let url = obj
+                                        .get("url")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("mcp://inline-source")
+                                        .to_string();
+                                    Some(crate::research::SourceChunk {
+                                        id,
+                                        title,
+                                        url,
+                                        content: content.to_string(),
+                                        integrity_hash: String::new(),
+                                        is_sanitized: true,
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    } else {
+                        return Err("Invalid 'sources' schema (expected [{id,title,url,content}] or [string])".to_string());
+                    }
                 } else {
                     Vec::new()
                 };
 
-                let claims = self.extractor.extract_claims(response_text);
+                let code_blocks = self.extractor.extract_fenced_code_blocks(response_text);
+                let mut claims = self.extractor.extract_claims(response_text);
+                if claims.is_empty() && code_blocks.is_empty() && !response_text.trim().is_empty() {
+                    claims.push(crate::grounding::AtomicClaim {
+                        id: "claim_1".to_string(),
+                        statement: response_text.trim().to_string(),
+                        category: crate::grounding::ClaimCategory::FactualAssertion,
+                    });
+                }
                 let mut report = self.verifier.verify_claims(&claims, &sources);
 
                 // Also audit any fenced code blocks present in the response using CodeInvariantChecker
-                let code_blocks = self.extractor.extract_fenced_code_blocks(response_text);
                 if !code_blocks.is_empty() {
                     let checker = crate::grounding::CodeInvariantChecker::new();
                     for (block_idx, (lang, code)) in code_blocks.iter().enumerate() {
@@ -778,14 +866,51 @@ impl McpServer {
                 Ok(json!(report))
             }
             "chronofact_memory_save" => {
+                let mut effective_args = args.clone();
+                if let Some(obj) = effective_args.as_object_mut() {
+                    if !obj.contains_key("entity_name") {
+                        for alias in ["key", "name", "title", "topic", "rule", "id", "subject"] {
+                            if let Some(v) = obj.get(alias).cloned() {
+                                obj.insert("entity_name".to_string(), v);
+                                break;
+                            }
+                        }
+                    }
+                    if !obj.contains_key("definition") {
+                        for alias in ["value", "claim", "content", "description", "summary", "decision", "fact", "text", "body"] {
+                            if let Some(v) = obj.get(alias).cloned() {
+                                obj.insert("definition".to_string(), v);
+                                break;
+                            }
+                        }
+                    }
+                    let has_valid_name = obj
+                        .get("entity_name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false);
+                    let has_valid_def = obj
+                        .get("definition")
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false);
+                    if has_valid_name && has_valid_def {
+                        if !obj.contains_key("project_id") {
+                            obj.insert("project_id".to_string(), json!("antigravity-ide"));
+                        }
+                        if !obj.contains_key("entity_type") {
+                            obj.insert("entity_type".to_string(), json!("ARCHITECTURE_RULE"));
+                        }
+                    }
+                }
                 // Report every missing/invalid required field at once (schema-driven).
-                tools::validate_required_string_args("chronofact_memory_save", args)?;
-                let field = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+                tools::validate_required_string_args("chronofact_memory_save", &effective_args)?;
+                let field = |k: &str| effective_args.get(k).and_then(|v| v.as_str()).unwrap_or_default();
                 let project_id = field("project_id");
                 let entity_name = field("entity_name");
                 let entity_type = field("entity_type");
                 let definition = field("definition");
-                let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
+                let version = effective_args.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
 
                 let entity = ProjectEntity {
                     id: format!("{}:{}", project_id, entity_name.to_lowercase().replace(' ', "_")),

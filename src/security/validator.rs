@@ -72,9 +72,15 @@ impl SecurityValidator {
                 if octets[0] == 169 && octets[1] == 254 { return true; }
                 // 100.64.0.0/10 (Carrier-Grade NAT)
                 if octets[0] == 100 && (64..=127).contains(&octets[1]) { return true; }
+                // 192.0.0.0/24 (IETF Protocol Assignments) & 192.0.2.0/24 (TEST-NET-1)
+                if octets[0] == 192 && octets[1] == 0 && (octets[2] == 0 || octets[2] == 2) { return true; }
+                // 198.18.0.0/15 (Benchmarking) & 198.51.100.0/24 (TEST-NET-2)
+                if octets[0] == 198 && ((18..=19).contains(&octets[1]) || (octets[1] == 51 && octets[2] == 100)) { return true; }
+                // 203.0.113.0/24 (TEST-NET-3)
+                if octets[0] == 203 && octets[1] == 0 && octets[2] == 113 { return true; }
                 // 0.0.0.0/8
                 if octets[0] == 0 { return true; }
-                // 224.0.0.0/4 (Multicast)
+                // 224.0.0.0/4 (Multicast & Reserved)
                 if octets[0] >= 224 { return true; }
                 false
             }
@@ -87,8 +93,10 @@ impl SecurityValidator {
                     return Self::is_private_or_restricted_ip(IpAddr::V4(v4));
                 }
                 let segs = v6.segments();
-                // Check IPv4-compatible IPv6 (::x.x.x.x where first 96 bits are 0)
-                if segs[0] == 0 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0 && segs[4] == 0 && segs[5] == 0 {
+                // Check IPv4-compatible IPv6 (::x.x.x.x) or NAT64 well-known prefix (64:ff9b::/96)
+                let is_v4_compat = segs[0] == 0 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0 && segs[4] == 0 && segs[5] == 0;
+                let is_nat64 = segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2] == 0 && segs[3] == 0 && segs[4] == 0 && segs[5] == 0;
+                if is_v4_compat || is_nat64 {
                     let v4 = std::net::Ipv4Addr::new(
                         (segs[6] >> 8) as u8,
                         segs[6] as u8,

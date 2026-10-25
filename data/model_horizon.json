@@ -78,8 +78,9 @@
       "estimated_training_freeze": "2023-10-01",
       "official_knowledge_cutoff": "2023-10-31",
       "is_frontier": false,
-      "status": "Legacy Active",
-      "notes": "Flagship multimodal Omni model. Superseded by GPT-5 & GPT-6 series."
+      "status": "Superseded (Legacy Active)",
+      "notes": "Flagship multimodal Omni model. Superseded by GPT-5 & GPT-6 series.",
+      "aliases": ["gpt-4", "gpt4", "gpt-4-turbo", "openai/gpt-4o", "openai/gpt-4"]
     },
     {
       "model_id": "claude-opus-5-5",

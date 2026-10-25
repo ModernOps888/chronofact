@@ -33,18 +33,32 @@ impl Default for ClaimExtractor {
 
 impl ClaimExtractor {
     pub fn new() -> Self {
+        static REGEXES: std::sync::OnceLock<(Regex, Regex, Regex, Regex, Regex)> =
+            std::sync::OnceLock::new();
+        let (s_re, c_re, cf_re, api_re, ver_re) = REGEXES
+            .get_or_init(|| {
+                (
+                    Regex::new(r"([.!?]+(\s+|$))").unwrap(),
+                    Regex::new(
+                        r"(?i)^(?:(?:certainly|sure|of course|as you know|in this guide|great question|good question)[,!:]?\s+|let'?s\s+(?:just\s+)?)",
+                    )
+                    .unwrap(),
+                    Regex::new(
+                        r"(?i)^(hello|hi|sure|certainly|i can help|i'd be happy to help|i would be happy to help|let's get started|hope this helps|feel free)\b",
+                    )
+                    .unwrap(),
+                    Regex::new(r"(?i)\b(function|method|endpoint|struct|class|parameter|returns?|supports?|implements?|deprecated|released|features?|protocol)\b").unwrap(),
+                    Regex::new(r"(?i)(\b(next\.?js|react|rust|node|python|vue|angular)\s+\d+\b|\bv?\d+(\.\d+)+\b|\bv\d+\b)").unwrap(),
+                )
+            })
+            .clone();
+
         Self {
-            sentence_split_regex: Regex::new(r"([.!?]+(\s+|$))").unwrap(),
-            cushion_prefix_regex: Regex::new(
-                r"(?i)^(?:(?:certainly|sure|of course|as you know|in this guide|great question|good question)[,!:]?\s+|let'?s\s+(?:just\s+)?)",
-            )
-            .unwrap(),
-            conversational_filter_regex: Regex::new(
-                r"(?i)^(hello|hi|sure|certainly|i can help|i'd be happy to help|i would be happy to help|let's get started|hope this helps|feel free)\b",
-            )
-            .unwrap(),
-            api_keyword_regex: Regex::new(r"(?i)\b(function|method|endpoint|struct|class|parameter|returns?|supports?|implements?|deprecated|released|features?|protocol)\b").unwrap(),
-            version_regex: Regex::new(r"(?i)(\b(next\.?js|react|rust|node|python|vue|angular)\s+\d+\b|\bv?\d+(\.\d+)+\b|\bv\d+\b)").unwrap(),
+            sentence_split_regex: s_re,
+            cushion_prefix_regex: c_re,
+            conversational_filter_regex: cf_re,
+            api_keyword_regex: api_re,
+            version_regex: ver_re,
         }
     }
 
@@ -137,6 +151,14 @@ fn split_prose_sentences(line: &str, split_regex: &Regex) -> Vec<String> {
         .replace("e.g. ", "e\u{0000}g\u{0000} ")
         .replace("i.e. ", "i\u{0000}e\u{0000} ")
         .replace("vs. ", "vs\u{0000} ")
+        .replace("et al. ", "et al\u{0000} ")
+        .replace("cf. ", "cf\u{0000} ")
+        .replace("Thm. ", "Thm\u{0000} ")
+        .replace("Lem. ", "Lem\u{0000} ")
+        .replace("Prop. ", "Prop\u{0000} ")
+        .replace("Cor. ", "Cor\u{0000} ")
+        .replace("Eq. ", "Eq\u{0000} ")
+        .replace("Fig. ", "Fig\u{0000} ")
         .replace("Next.js", "Next\u{0000}js")
         .replace("next.js", "next\u{0000}js")
         .replace("Node.js", "Node\u{0000}js")

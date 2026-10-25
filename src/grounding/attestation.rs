@@ -78,8 +78,17 @@ impl AttestationEngine {
         };
 
         let canonical_payload = format!(
-            "CHRONOFACT-ATTESTATION:v1:{}:{}:{}:{}:{}:{}",
-            attestation_id, project_id, target_sha256, temporal_anchor, verdict_str, report.violations_count
+            "CHRONOFACT-ATTESTATION:v1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            attestation_id,
+            project_id,
+            report.target,
+            target_sha256,
+            temporal_anchor,
+            verdict_str,
+            report.total_rules_evaluated,
+            report.violations_count,
+            report.critical_count,
+            report.high_count
         );
         // HMAC-SHA256 with an operator-supplied key. With no key the token is explicitly
         // unsigned rather than "signed" with a publicly known literal.
@@ -115,13 +124,17 @@ impl AttestationEngine {
             return false;
         }
         let canonical_payload = format!(
-            "CHRONOFACT-ATTESTATION:v1:{}:{}:{}:{}:{}:{}",
+            "CHRONOFACT-ATTESTATION:v1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             attestation.attestation_id,
             attestation.project_id,
+            attestation.target_name,
             attestation.target_sha256,
             attestation.temporal_anchor,
             attestation.verdict,
-            attestation.violations_count
+            attestation.rules_evaluated,
+            attestation.violations_count,
+            attestation.critical_violations,
+            attestation.high_violations
         );
         let expected = hmac_sha256_hex(key.as_bytes(), canonical_payload.as_bytes());
         // Constant-time comparison

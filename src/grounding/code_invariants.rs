@@ -198,6 +198,15 @@ impl CodeInvariantChecker {
                 pattern: r#"(?:\bstd::thread::sleep\s*\(|\btime\.sleep\s*\(|\bchild_process\.execSync\s*\()"#.to_string(),
                 remediation: "Use tokio::time::sleep in async Rust, asyncio.sleep in async Python, or async child_process.execFile / spawn in Node.js.".to_string(),
             },
+            InvariantRule {
+                id: "INV-FORMAL-LEAN4-SOUNDNESS".to_string(),
+                name: "Incomplete Formal Proof / Unproved Axiom Escape (Lean 4 / Coq)".to_string(),
+                category: "Reliability".to_string(),
+                severity: InvariantSeverity::Critical,
+                description: "Detects unproved proof obligations (sorry, admit, sorryAx, Admitted., @[implemented_by], @[extern]) that bypass formal kernel verification.".to_string(),
+                pattern: r#"(?:\bsorry\b|\badmit\b|\bsorryAx\b|\bAdmitted\.|@\[(?:implemented_by|extern|csimp)\b)"#.to_string(),
+                remediation: "Complete all constructive proof obligations without sorry/admit/sorryAx and verify clean axiom dependencies via `#print axioms`.".to_string(),
+            },
         ];
 
                 rules
@@ -285,8 +294,17 @@ impl CodeInvariantChecker {
         let has_sql_table_allowlist = content.contains("TABLES = {")
             || content.contains("ALLOWED_TABLES")
             || content.contains("VALID_TABLES");
+        let file_lower = file_path.to_lowercase();
+        let is_formal_proof_context = file_lower.ends_with(".lean")
+            || file_lower.ends_with(".lean4")
+            || file_lower.ends_with(".v")
+            || content.contains("theorem ")
+            || content.contains("lemma ")
+            || content.contains(":= by")
+            || content.contains("Admitted.");
 
         let mut in_block_comment = false;
+        let mut in_lean_block_comment = false;
         let mut in_py_docstring = false;
         let mut in_async_scope = !has_any_fn_decl;
         let mut sql_window_skip_until: usize = 0;
@@ -308,10 +326,39 @@ impl CodeInvariantChecker {
                 }
             }
             if trimmed.starts_with("/*") {
-                if !trimmed[2..].contains("*/") {
+                if let Some(end_rel) = trimmed[2..].find("*/") {
+                    let after = trimmed[2 + end_rel + 2..].trim();
+                    if after.is_empty() {
+                        continue;
+                    }
+                } else {
                     in_block_comment = true;
+                    continue;
                 }
-                continue;
+            }
+
+            // Track Lean 4 /- ... -/ block comments statefully
+            if in_lean_block_comment {
+                if let Some(end_pos) = trimmed.find("-/") {
+                    in_lean_block_comment = false;
+                    let after = trimmed[end_pos + 2..].trim();
+                    if after.is_empty() {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+            if trimmed.starts_with("/-") {
+                if let Some(end_rel) = trimmed[2..].find("-/") {
+                    let after = trimmed[2 + end_rel + 2..].trim();
+                    if after.is_empty() {
+                        continue;
+                    }
+                } else {
+                    in_lean_block_comment = true;
+                    continue;
+                }
             }
 
             // Track multi-line Python """ ... """ or ''' ... ''' docstrings statefully
@@ -367,6 +414,16 @@ impl CodeInvariantChecker {
             }
 
             for (rule, regex) in self.built_in_rules.iter().chain(compiled_custom.iter()) {
+                if rule.id == "INV-FORMAL-LEAN4-SOUNDNESS" && !is_formal_proof_context {
+                    continue;
+                }
+                if rule.id == "INV-TEMP-DEPRECATED-LIB"
+                    && (trimmed.contains(".contains(")
+                        || trimmed.contains(".starts_with(")
+                        || trimmed.contains(".ends_with("))
+                {
+                    continue; // Validation predicate inspecting input for retired model IDs
+                }
                 if rule.id == "INV-ARCH-DAL-LEAK" && !is_frontend_path {
                     continue; // Skip DAL leak check on backend files
                 }
@@ -521,7 +578,7 @@ mod tests {
     #[test]
     fn test_multilang_vulnerabilities_and_hallucinated_apis() {
         let checker = CodeInvariantChecker::new();
-        assert_eq!(checker.built_in_rules.len(), 12);
+        assert_eq!(checker.built_in_rules.len(), 13);
 
         let polyglot_code = r#"
 // Rust SQLi + Hallucinated Option method + TLS bypass
@@ -530,8 +587,9 @@ if opt.is_none_or_empty() { return; }
 let client = reqwest::Client::builder().danger_accept_invalid_certs(true).build();
 // C++ buffer overflow
 strcpy(dest_buf, untrusted_input);
-// TypeScript hallucinated JSON method + React XSS
+// TypeScript hallucinated JSON method + React XSS + inline block-comment prefix bypass
 const parsed = JSON.tryParse(raw);
+/* comment prefix */ eval(raw);
 return <div dangerouslySetInnerHTML={{ __html: raw }} />;
 // Python unsafe deserialization + hallucinated asyncio method
 obj = pickle.loads(payload)
@@ -541,6 +599,9 @@ query := fmt.Sprintf("SELECT * FROM accounts WHERE name = '%s'", name)
 data, _ := ioutil.ReadFile(path)
 // PowerShell injection
 Invoke-Expression $userCmd
+// Lean 4 unproved theorem escape
+theorem kls_isoperimetric_bound : psi_n <= C := by
+  sorry
 "#;
         let report = checker.audit_code("src/polyglot_audit.rs", polyglot_code, None);
         assert_eq!(report.verdict, AuditVerdict::Block);
@@ -552,5 +613,6 @@ Invoke-Expression $userCmd
         assert!(rule_ids.contains(&"INV-SEC-EVAL-EXEC"));
         assert!(rule_ids.contains(&"INV-SEC-PATH-TRAVERSAL"));
         assert!(rule_ids.contains(&"INV-TEMP-DEPRECATED-LIB"));
+        assert!(rule_ids.contains(&"INV-FORMAL-LEAN4-SOUNDNESS"));
     }
 }

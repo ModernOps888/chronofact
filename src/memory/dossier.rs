@@ -35,7 +35,7 @@ impl DossierCompiler {
                 q.trim()
                     .to_lowercase()
                     .split(|c: char| !c.is_alphanumeric())
-                    .filter(|w| w.len() > 2 && !stopwords.contains(w))
+                    .filter(|w| w.len() >= 2 && !stopwords.contains(w))
                     .map(|s| s.to_string())
                     .collect()
             })
@@ -52,17 +52,18 @@ impl DossierCompiler {
                     let def_lower = e.definition.to_lowercase();
                     let name_words: Vec<&str> = name_lower
                         .split(|c: char| !c.is_alphanumeric())
-                        .filter(|w| w.len() > 1)
+                        .filter(|w| w.len() >= 2)
                         .collect();
                     let def_words: Vec<&str> = def_lower
                         .split(|c: char| !c.is_alphanumeric())
-                        .filter(|w| w.len() > 2)
+                        .filter(|w| w.len() >= 2)
                         .collect();
+                    let name_compact: String = name_lower.chars().filter(|c| c.is_alphanumeric()).collect();
 
                     let mut matched_weight = 0.0_f32;
                     for t in &query_tokens {
                         let t_str = t.as_str();
-                        if name_words.contains(&t_str) {
+                        if name_words.contains(&t_str) || (t_str.len() >= 4 && name_compact.contains(t_str)) {
                             matched_weight += 2.0;
                         } else if def_words.contains(&t_str) {
                             matched_weight += 1.0;
@@ -70,9 +71,7 @@ impl DossierCompiler {
                     }
 
                     if matched_weight > 0.0 {
-                        let raw_lexical = (matched_weight / (query_tokens.len() as f32).max(1.0))
-                            .min(1.0)
-                            .max(0.22);
+                        let raw_lexical = (matched_weight / (query_tokens.len() as f32).max(1.0)).min(1.0);
 
                         // Exponential temporal recency decay: exp(-0.002 * age_days), bounded in [0.85, 1.0]
                         let age_days = chrono::DateTime::parse_from_rfc3339(&e.updated_at)

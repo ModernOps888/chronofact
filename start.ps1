@@ -24,13 +24,17 @@ if (-not (Test-Path $binDir)) {
 }
 
 if (Test-Path $targetBin) {
-    try {
-        if (Test-Path $binPath) {
-            Remove-Item "$binPath.old" -Force -ErrorAction SilentlyContinue
-            Move-Item -Path $binPath -Destination "$binPath.old" -Force -ErrorAction SilentlyContinue
-        }
-        Copy-Item $targetBin $binPath -Force -ErrorAction SilentlyContinue
-    } catch {}
+    $needsCopy = (-not (Test-Path $binPath)) -or ((Get-FileHash $targetBin).Hash -ne (Get-FileHash $binPath).Hash)
+    if ($needsCopy) {
+        try {
+            if (Test-Path $binPath) {
+                Get-ChildItem "$binDir\*.old*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                $oldPath = "$binPath.old.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+                Move-Item -Path $binPath -Destination $oldPath -Force -ErrorAction SilentlyContinue
+            }
+            Copy-Item $targetBin $binPath -Force -ErrorAction SilentlyContinue
+        } catch {}
+    }
 } elseif (-not (Test-Path $binPath)) {
     if (-not $Quiet) { Write-Host "Release binary not found. Compiling now..." -ForegroundColor Yellow }
     cargo build --release --manifest-path (Join-Path $baseDir "Cargo.toml")

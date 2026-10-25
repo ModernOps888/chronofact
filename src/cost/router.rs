@@ -126,6 +126,7 @@ impl TfidfToolRouter {
         for tool in &[
             "read_file",
             "write_file",
+            "write_to_file",
             "view_file",
             "replace_file_content",
             "terminal_exec",
@@ -494,8 +495,9 @@ fn tokenize(text: &str) -> Vec<String> {
     let mut seen_stems = HashSet::new();
     for tok in base_tokens {
         // Add a 5-char subword stem for morphological variants (e.g., postgres/postgresql, query/queries, migrate/migration)
-        if tok.chars().count() >= 5 && tok.is_ascii() {
-            let stem = format!("#{}", &tok[..5]);
+        if tok.chars().count() >= 5 {
+            let stem_chars: String = tok.chars().take(5).collect();
+            let stem = format!("#{}", stem_chars);
             if seen_stems.insert(stem.clone()) {
                 result.push(stem);
             }
@@ -567,6 +569,7 @@ pub type ToolSchema = ToolCandidate;
 pub const ALWAYS_RETAINED: &[&str] = &[
     "read_file",
     "write_file",
+    "write_to_file",
     "view_file",
     "replace_file_content",
     "terminal_exec",
@@ -583,7 +586,11 @@ pub fn extract_unigrams(text: &str) -> Vec<String> {
 
 /// Computes lexical token overlap similarity between query tokens and a tool candidate schema.
 pub fn compute_tool_similarity(query_tokens: &[String], tool: &ToolCandidate) -> f32 {
-    let tool_text = format!("{} {} {}", tool.name, tool.server_name, tool.description);
+    let mut tool_text = format!("{} {} {}", tool.name, tool.server_name, tool.description);
+    for param in &tool.parameters {
+        tool_text.push(' ');
+        tool_text.push_str(param);
+    }
     let doc_tokens = tokenize(&tool_text);
     if query_tokens.is_empty() || doc_tokens.is_empty() {
         return 0.0;

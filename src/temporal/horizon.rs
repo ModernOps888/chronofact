@@ -36,12 +36,26 @@ impl HorizonCalculator {
             || model.status.contains("Deprecated")
             || model.status.contains("Superseded");
 
-        let recommended_replacement = if model.model_id.contains("3-5") || model.model_id.contains("3-7") {
+        let recommended_replacement = if model.model_id.contains("3-5")
+            || model.model_id.contains("3-7")
+            || model.model_id.contains("claude-3")
+        {
             Some("Claude Sonnet 5.5 / Claude Opus 5.5".to_string())
         } else if model.model_id.contains("grok-3") || model.model_id.contains("grok-2") {
             Some("Grok 4.7 (xAI September 2026)".to_string())
         } else if model.model_id.contains("gpt-4") {
             Some("GPT-6 Astra / GPT-6.1 Sol / GPT-5 / OpenAI o3".to_string())
+        } else if !scan.outdated_models_flagged.is_empty() {
+            let joined = scan.outdated_models_flagged.join(" ").to_lowercase();
+            if joined.contains("claude") || joined.contains("sonnet") || joined.contains("opus") {
+                Some("Claude Sonnet 5.5 / Claude Opus 5.5".to_string())
+            } else if joined.contains("grok") {
+                Some("Grok 4.7 (xAI September 2026)".to_string())
+            } else if joined.contains("gpt-4") || joined.contains("gpt 4") || joined.contains("gpt4") {
+                Some("GPT-6 Astra / GPT-6.1 Sol / GPT-5 / OpenAI o3".to_string())
+            } else {
+                None
+            }
         } else {
             None
         };

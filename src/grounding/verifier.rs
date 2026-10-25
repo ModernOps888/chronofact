@@ -326,7 +326,24 @@ impl FactVerifier {
                     || clause.contains("deepmind")
                     || clause.contains("not xai")
                     || clause.contains("not openai");
-                mentions_gemini_argon && gemini_wrong_vendor && !explicitly_google
+                if mentions_gemini_argon && gemini_wrong_vendor && !explicitly_google {
+                    return true;
+                }
+
+                // Grok 4.7 vendor misattribution (xAI, not OpenAI/Google/DeepMind/Anthropic/Meta)
+                let mentions_grok4 = clause.contains("grok 4")
+                    || clause.contains("grok-4");
+                let grok_wrong_vendor = clause.contains("openai")
+                    || clause.contains("google")
+                    || clause.contains("deepmind")
+                    || clause.contains("anthropic")
+                    || clause.contains("meta");
+                let explicitly_xai = clause.contains("xai")
+                    || clause.contains("x-ai")
+                    || clause.contains("not openai")
+                    || clause.contains("not google")
+                    || clause.contains("not anthropic");
+                mentions_grok4 && grok_wrong_vendor && !explicitly_xai
             });
 
         if misattributed_in_clause {
@@ -390,6 +407,49 @@ impl FactVerifier {
                 vec!["policy_invariant_rule".to_string()],
                 "POLICY ENTAILED: GPT-6 Astra and GPT-6.1 Sol are policy-registered OpenAI frontier models launched in September 2026.".to_string(),
             );
+        }
+
+        // Configurable Policy Invariant Rule 5b: Positive Entailment for Registered 2026 Frontier Models
+        let has_negation_5b = [
+            "not ", "never", "denies", "isn't", "isnt", "didn't", "didnt", "no longer",
+            "refutes", "disowns", "retired", "deprecated",
+        ]
+        .iter()
+        .any(|neg| statement_lower.contains(neg));
+        if !has_negation_5b {
+            if (statement_lower.contains("claude opus 5.5")
+                || statement_lower.contains("claude sonnet 5.5")
+                || statement_lower.contains("opus 5.5")
+                || statement_lower.contains("sonnet 5.5"))
+                && statement_lower.contains("anthropic")
+            {
+                return (
+                    VerificationStatus::Entailed,
+                    Some(0.99),
+                    vec!["policy_invariant_rule".to_string()],
+                    "POLICY ENTAILED: Claude Opus 5.5 and Claude Sonnet 5.5 are active 2026 Anthropic frontier models.".to_string(),
+                );
+            }
+            if (statement_lower.contains("gemini 4") || statement_lower.contains("gemini-4"))
+                && (statement_lower.contains("google") || statement_lower.contains("deepmind") || statement_lower.contains("argon"))
+            {
+                return (
+                    VerificationStatus::Entailed,
+                    Some(0.99),
+                    vec!["policy_invariant_rule".to_string()],
+                    "POLICY ENTAILED: Gemini 4 Argon is Google DeepMind's active 2026 frontier flagship model.".to_string(),
+                );
+            }
+            if (statement_lower.contains("grok 4.7") || statement_lower.contains("grok-4.7"))
+                && (statement_lower.contains("xai") || statement_lower.contains("x-ai") || statement_lower.contains("superseded grok 3"))
+            {
+                return (
+                    VerificationStatus::Entailed,
+                    Some(0.99),
+                    vec!["policy_invariant_rule".to_string()],
+                    "POLICY ENTAILED: Grok 4.7 is xAI's active 2026 frontier model (released September 2026).".to_string(),
+                );
+            }
         }
 
         // Configurable Policy Invariant Rule 6: Hallucinated Standard Library APIs & Core SWE Invariants
@@ -512,11 +572,14 @@ impl FactVerifier {
         let claim_negated = has_negation_cue(&statement_lower);
         let claim_has_concessive = CONCESSIVE_MARKERS.iter().any(|m| statement_lower.contains(m));
 
-        // Precompute normalized word sets per source for word-boundary + stem + IDF matching
-        let source_word_sets: Vec<(HashSet<String>, HashSet<String>)> = sources
+        // Precompute lowercased source texts and normalized word sets per source for O(S * T) matching
+        let source_lowers: Vec<String> = sources
             .iter()
-            .map(|src| {
-                let lower = src.content.to_lowercase();
+            .map(|src| src.content.to_lowercase())
+            .collect();
+        let source_word_sets: Vec<(HashSet<String>, HashSet<String>)> = source_lowers
+            .iter()
+            .map(|lower| {
                 let words: HashSet<String> = lower
                     .split(|c: char| !c.is_alphanumeric())
                     .filter(|w| !w.is_empty())
@@ -524,45 +587,52 @@ impl FactVerifier {
                     .collect();
                 let stems: HashSet<String> = words
                     .iter()
-                    .filter(|w| w.len() >= 5 && w.is_ascii())
-                    .map(|w| w[..5].to_string())
+                    .filter(|w| w.chars().count() >= 5)
+                    .map(|w| w.chars().take(5).collect::<String>())
                     .collect();
                 (words, stems)
             })
             .collect();
 
         let num_sources = sources.len().max(1) as f32;
+        let token_matches_source = |s_idx: usize, token: &str, t_norm: &str, t_stem: Option<&str>| -> bool {
+            let (ref w_set, ref st_set) = source_word_sets[s_idx];
+            w_set.contains(t_norm)
+                || has_word_phrase(&source_lowers[s_idx], token)
+                || t_stem.map(|st| st_set.contains(st)).unwrap_or(false)
+        };
+
+        // Precompute (token, t_norm, t_stem, idf) once across all sources
+        let claim_token_meta: Vec<(&String, String, Option<String>, f32)> = claim_tokens
+            .iter()
+            .map(|token| {
+                let t_norm = norm_word(token);
+                let t_stem = if t_norm.chars().count() >= 5 {
+                    Some(t_norm.chars().take(5).collect::<String>())
+                } else {
+                    None
+                };
+                let df = (0..sources.len())
+                    .filter(|&idx| token_matches_source(idx, token, &t_norm, t_stem.as_deref()))
+                    .count() as f32;
+                let idf = ((num_sources + 1.0) / (df + 1.0)).ln() + 1.0;
+                (token, t_norm, t_stem, idf)
+            })
+            .collect();
 
         for (src_idx, source) in sources.iter().enumerate() {
-            let source_lower = source.content.to_lowercase();
+            let source_lower = &source_lowers[src_idx];
             let (ref src_words, _) = source_word_sets[src_idx];
 
             let mut matches = 0usize;
             let mut weighted_matched = 0.0_f32;
             let mut total_weight = 0.0_f32;
 
-            for token in &claim_tokens {
-                let t_norm = norm_word(token);
-                let token_matches_fn = |s_idx: usize, s_lower: &str| -> bool {
-                    let (ref w_set, ref st_set) = source_word_sets[s_idx];
-                    w_set.contains(&t_norm)
-                        || has_word_phrase(s_lower, token)
-                        || (t_norm.len() >= 5
-                            && t_norm.is_ascii()
-                            && st_set.contains(&t_norm[..5]))
-                };
-
-                let df = sources
-                    .iter()
-                    .enumerate()
-                    .filter(|(idx, s)| token_matches_fn(*idx, &s.content.to_lowercase()))
-                    .count() as f32;
-                let idf = ((num_sources + 1.0) / (df + 1.0)).ln() + 1.0;
-                total_weight += idf;
-
-                if token_matches_fn(src_idx, &source_lower) {
+            for (token, ref t_norm, ref t_stem, idf) in &claim_token_meta {
+                total_weight += *idf;
+                if token_matches_source(src_idx, token, t_norm, t_stem.as_deref()) {
                     matches += 1;
-                    weighted_matched += idf;
+                    weighted_matched += *idf;
                 }
             }
 
@@ -913,6 +983,54 @@ fn evaluate_swe_domain_invariant(s: &str) -> Option<(VerificationStatus, f32, St
             VerificationStatus::Contradicted,
             0.02,
             "SWE INVARIANT CONTRADICTION: Octal mode 644 is rw-r--r-- and does not grant execute permission.".to_string(),
+        ));
+    }
+
+    // 7. Mathematical & Spectral Geometry Invariants (KLS Conjecture, Cheeger-Poincaré Spectral Gap)
+    if (s.contains("kls conjecture") || s.contains("kannan-lovasz-simonovits") || s.contains("kannan–lovász–simonovits"))
+        && (s.contains("grows linearly with dimension")
+            || s.contains("omega(n)")
+            || s.contains("unbounded in dimension")
+            || s.contains("exponentially with dimension"))
+        && !s.contains("not ")
+        && !s.contains("refutes")
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.02,
+            "MATH INVARIANT CONTRADICTION: The KLS (Kannan-Lovász-Simonovits) conjecture asserts that the isoperimetric / Cheeger constant psi_n of any isotropic log-concave distribution is bounded above by a dimension-independent universal constant O(1) (with classical polylogarithmic bounds O(sqrt(log n)) via Eldan stochastic localization / Klartag), not growing linearly or exponentially with dimension n.".to_string(),
+        ));
+    }
+    if (s.contains("kls conjecture") || s.contains("kannan-lovasz-simonovits") || s.contains("kannan–lovász–simonovits"))
+        && (s.contains("universal constant")
+            || s.contains("dimension-independent")
+            || s.contains("isotropic log-concave")
+            || s.contains("cheeger")
+            || s.contains("poincar")
+            || s.contains("stochastic localization"))
+        && !s.contains("false")
+        && !s.contains("disproved")
+    {
+        return Some((
+            VerificationStatus::Entailed,
+            0.98,
+            "MATH INVARIANT ENTAILED: The KLS isoperimetric bound relates the Cheeger constant psi_n and Poincaré spectral gap lambda_1 >= 1/(4*psi_n^2) for isotropic log-concave measures in high-dimensional convex geometry.".to_string(),
+        ));
+    }
+
+    // 8. Formal Verification & Lean 4 Kernel Soundness Invariants
+    if (s.contains("lean 4") || s.contains("lean4"))
+        && (s.contains("sorry") || s.contains("sorryax"))
+        && (s.contains("sound proof")
+            || s.contains("complete proof without axioms")
+            || s.contains("no axioms introduced"))
+        && !s.contains("not ")
+        && !s.contains("unsound")
+    {
+        return Some((
+            VerificationStatus::Contradicted,
+            0.01,
+            "FORMAL VERIFICATION CONTRADICTION: In Lean 4, `sorry` elaborates to `sorryAx`, an unsound axiom that bypasses proof checking and is surfaced by `#print axioms`.".to_string(),
         ));
     }
 

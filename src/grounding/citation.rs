@@ -1,4 +1,4 @@
-use super::verifier::VerificationReport;
+use super::verifier::{VerificationReport, VerificationStatus};
 use crate::research::SourceChunk;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ impl CitationMapper {
 
         for source in sources {
             let count = report.claims.iter()
-                .filter(|c| c.matched_source_ids.contains(&source.id))
+                .filter(|c| c.status == VerificationStatus::Entailed && c.matched_source_ids.contains(&source.id))
                 .count();
 
             citations.push(GroundedCitation {

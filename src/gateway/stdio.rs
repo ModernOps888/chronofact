@@ -335,6 +335,17 @@ async fn reader_loop(
             break;
         }
 
+        // If line exceeded MAX_STDIO_LINE_BYTES without reaching '\n', drain remaining bytes until '\n'
+        if bytes_read as u64 == MAX_STDIO_LINE_BYTES && !buf.ends_with(b"\n") {
+            warn!(
+                "[{}] Oversized stdio frame (>16MB) truncated; draining remainder until newline",
+                server_name
+            );
+            let mut discard = Vec::new();
+            let _ = reader.read_until(b'\n', &mut discard).await;
+            continue;
+        }
+
         let text = String::from_utf8_lossy(&buf);
         let trimmed = text.trim();
         if trimmed.is_empty() || !trimmed.starts_with('{') {

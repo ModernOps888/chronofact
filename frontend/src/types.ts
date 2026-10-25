@@ -128,8 +128,11 @@ export interface CostMetricsSummary {
 export interface ToolCandidate {
   name: string;
   description: string;
-  category: string;
+  category?: string;
+  server_name?: string;
   parameters: string[];
+  estimated_tokens?: number;
+  is_pinned?: boolean;
 }
 
 export interface ScoredTool {

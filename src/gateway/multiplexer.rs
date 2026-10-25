@@ -223,6 +223,8 @@ pub struct GatewayMultiplexer {
     stdio_connections: HashMap<String, Arc<StdioConnection>>,
     /// tool_name or server/tool_name -> server_name
     tool_index: HashMap<String, String>,
+    /// Tracks bare tool names that collided across 2+ servers so a 3rd server cannot re-claim the bare name
+    collided_bare_names: std::collections::HashSet<String>,
     /// resource_uri or server/resource_uri -> server_name
     resource_index: HashMap<String, String>,
     /// prompt_name or server/prompt_name -> server_name
@@ -252,6 +254,7 @@ impl GatewayMultiplexer {
             servers: HashMap::new(),
             stdio_connections: HashMap::new(),
             tool_index: HashMap::new(),
+            collided_bare_names: std::collections::HashSet::new(),
             resource_index: HashMap::new(),
             prompt_index: HashMap::new(),
             all_tools: Vec::new(),
@@ -317,13 +320,19 @@ impl GatewayMultiplexer {
             let registered = RegisteredTool::new(tool.clone(), &name);
             self.tool_index.insert(registered.fqn.clone(), name.clone());
 
-            if let Some(existing_server) = self.tool_index.get(&tool.name) {
+            if self.collided_bare_names.contains(&tool.name) {
+                warn!(
+                    "⚠️ Tool collision: '{}' also registered by '{}' (already collided). Bare name remains disabled.",
+                    tool.name, name
+                );
+            } else if let Some(existing_server) = self.tool_index.get(&tool.name) {
                 if existing_server != &name {
                     warn!(
                         "⚠️ Tool collision: '{}' registered by both '{}' and '{}'. Ambiguous bare name removed (use FQN 'server/tool').",
                         tool.name, existing_server, name
                     );
                     self.tool_index.remove(&tool.name);
+                    self.collided_bare_names.insert(tool.name.clone());
                 }
             } else {
                 self.tool_index.insert(tool.name.clone(), name.clone());

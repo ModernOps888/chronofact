@@ -54,10 +54,10 @@ impl SemanticEntityGraph {
             [],
         )?;
 
-        // Index on project_id and entity_name
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_entities_project ON project_entities(project_id);",
-            [],
+        // Index on project_id and entity_relations target_id
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_entities_project ON project_entities(project_id);
+             CREATE INDEX IF NOT EXISTS idx_entity_relations_target ON entity_relations(target_id);",
         )?;
 
         Ok(())
@@ -107,11 +107,15 @@ impl SemanticEntityGraph {
         project_id: &str,
         query: &str,
     ) -> Result<Vec<ProjectEntity>> {
-        let pattern = format!("%{}%", query);
+        let escaped = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
         let mut stmt = conn.prepare(
             "SELECT id, project_id, entity_name, entity_type, definition, version, updated_at
              FROM project_entities
-             WHERE project_id = ?1 AND (entity_name LIKE ?2 OR definition LIKE ?2)
+             WHERE project_id = ?1 AND (entity_name LIKE ?2 ESCAPE '\\' OR definition LIKE ?2 ESCAPE '\\')
              ORDER BY updated_at DESC;",
         )?;
 

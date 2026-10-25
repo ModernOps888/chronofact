@@ -134,9 +134,10 @@ impl ModelRegistry {
             let m = entry.horizon;
             // Insert primary key
             self.models.insert(m.model_id.to_lowercase(), m.clone());
-            // Register aliases
+            // Register normalized aliases
             for alias in entry.aliases {
-                self.models.insert(alias, m.clone());
+                let norm_alias = alias.to_lowercase().trim().replace(' ', "-");
+                self.models.insert(norm_alias, m.clone());
             }
         }
     }

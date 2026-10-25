@@ -162,3 +162,38 @@ fn test_memory_save_schema_declares_all_required_fields() {
     let required = chronofact::mcp::tools::required_fields("chronofact_memory_save");
     assert_eq!(required, vec!["project_id", "entity_name", "entity_type", "definition"]);
 }
+
+#[tokio::test]
+async fn test_mcp_alias_flexibility_and_kls_lean4_invariants() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("alias.db");
+    let server = McpServer::new(Arc::new(MemoryEngine::open(db.to_str().unwrap()).unwrap()));
+
+    // 1. chronofact_verify_claims with 'claim' alias and 'grounding_sources' string array
+    let (is_error, text) = call_tool(
+        &server,
+        "chronofact_verify_claims",
+        json!({
+            "claim": "The KLS conjecture bounds the Cheeger constant psi_n for isotropic log-concave distributions by a universal constant.",
+            "grounding_sources": ["High-dimensional convex geometry KLS Cheeger-Poincaré spectral gap bound."]
+        }),
+    )
+    .await;
+    assert!(!is_error, "{}", text);
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["entailed_count"], json!(1));
+    assert_eq!(v["claims"][0]["status"], json!("Entailed"));
+
+    // 2. chronofact_memory_save with 'key' and 'value' aliases auto-fills project_id and entity_type
+    let (is_error, text) = call_tool(
+        &server,
+        "chronofact_memory_save",
+        json!({
+            "key": "KLS_Spectral_Invariant",
+            "value": "Enforce Cheeger-Poincaré spectral gap bound lambda_1 >= 1/(4*psi_n^2)."
+        }),
+    )
+    .await;
+    assert!(!is_error, "{}", text);
+    assert!(text.contains("\"status\":\"saved\""), "got: {}", text);
+}

@@ -259,7 +259,7 @@ export const CostOptimizerHUD: React.FC<Props> = () => {
                               </span>
                             )}
                             <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-200 text-[10px] rounded">
-                              {tool.category}
+                              {tool.server_name || tool.category || 'core'}
                             </span>
                           </div>
                         </div>
