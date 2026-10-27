@@ -14,6 +14,10 @@ use tokio::sync::RwLock;
 
 use std::collections::HashMap;
 
+/// Shared stdout frame channel (set once by `run_stdio`) used for server-initiated notifications.
+/// Held as a weak sender so it never keeps the writer alive after stdin closes (clean exit on EOF).
+static STDOUT_NOTIFIER: std::sync::OnceLock<tokio::sync::mpsc::WeakUnboundedSender<String>> = std::sync::OnceLock::new();
+
 /// Circuit breaker state tracking consecutive upstream timeouts and open/closed state.
 #[derive(Debug, Clone, Default)]
 pub struct GatewayCircuitBreaker {
@@ -47,6 +51,7 @@ impl GatewayCircuitBreaker {
     }
 }
 
+#[derive(Clone)]
 pub struct McpServer {
     model_registry: Arc<ModelRegistry>,
     scanner: Arc<TemporalScanner>,
@@ -162,8 +167,24 @@ impl McpServer {
         const MAX_MCP_LINE_BYTES: u64 = 16 * 1024 * 1024;
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin);
-        let mut stdout = tokio::io::stdout();
         let mut buf = Vec::new();
+
+        // Single ordered writer: concurrently executing requests each emit one complete frame, so
+        // a slow `chronofact_ground_query` (web search) or `gateway_call_tool` (upstream, up to 60s)
+        // never blocks a fast `chronofact_temporal_check` / `ping` queued behind it.
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let _ = STDOUT_NOTIFIER.set(out_tx.downgrade());
+        let writer = tokio::spawn(async move {
+            let mut stdout = tokio::io::stdout();
+            while let Some(mut frame) = out_rx.recv().await {
+                frame.push('\n');
+                if stdout.write_all(frame.as_bytes()).await.is_err() {
+                    break;
+                }
+                let _ = stdout.flush().await;
+            }
+        });
+        let mut in_flight = tokio::task::JoinSet::new();
 
         loop {
             buf.clear();
@@ -178,6 +199,24 @@ impl McpServer {
                 break;
             }
 
+            // Oversized frame: drain the rest of the line so the remainder is not parsed as new requests.
+            if bytes_read as u64 >= MAX_MCP_LINE_BYTES && buf.last() != Some(&b'\n') {
+                let mut sink = Vec::new();
+                loop {
+                    sink.clear();
+                    match (&mut reader).take(MAX_MCP_LINE_BYTES).read_until(b'\n', &mut sink).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) if sink.last() == Some(&b'\n') => break,
+                        Ok(_) => continue,
+                    }
+                }
+                let err_resp = JsonRpcResponse::error(None, -32600, "Request frame exceeds 16 MB limit");
+                if let Ok(out) = serde_json::to_string(&err_resp) {
+                    let _ = out_tx.send(out);
+                }
+                continue;
+            }
+
             let text = String::from_utf8_lossy(&buf);
             let trimmed = text.trim();
             if trimmed.is_empty() {
@@ -188,22 +227,38 @@ impl McpServer {
                 Ok(r) => r,
                 Err(e) => {
                     let err_resp = JsonRpcResponse::error(None, -32700, &format!("Parse error: {}", e));
-                    let out = serde_json::to_string(&err_resp).unwrap();
-                    let _ = stdout.write_all(format!("{}\n", out).as_bytes()).await;
-                    let _ = stdout.flush().await;
+                    if let Ok(out) = serde_json::to_string(&err_resp) {
+                        let _ = out_tx.send(out);
+                    }
                     continue;
                 }
             };
 
-            let resp = self.handle_request(req).await;
-            if let Some(r) = resp {
-                let out = serde_json::to_string(&r).unwrap();
-                let _ = stdout.write_all(format!("{}\n", out).as_bytes()).await;
-                let _ = stdout.flush().await;
-            }
+            while in_flight.try_join_next().is_some() {}
+            let server = self.clone();
+            let tx = out_tx.clone();
+            in_flight.spawn(async move {
+                if let Some(r) = server.handle_request(req).await {
+                    if let Ok(out) = serde_json::to_string(&r) {
+                        let _ = tx.send(out);
+                    }
+                }
+            });
         }
 
+        while in_flight.join_next().await.is_some() {}
+        drop(out_tx);
+        let _ = writer.await;
         Ok(())
+    }
+
+    /// Emits `notifications/tools/list_changed` to the MCP client (no-op outside stdio mode).
+    /// Used when upstream gateway servers finish connecting after the initial handshake.
+    pub fn notify_tools_list_changed() {
+        if let Some(tx) = STDOUT_NOTIFIER.get().and_then(|weak| weak.upgrade()) {
+            let frame = json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
+            let _ = tx.send(frame.to_string());
+        }
     }
 
     pub async fn handle_request(&self, req: JsonRpcRequest) -> Option<JsonRpcResponse> {

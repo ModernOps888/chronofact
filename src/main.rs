@@ -92,14 +92,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             server.run().await?;
         }
         Commands::Mcp => {
-            let (gateway, mut death_rx) = chronofact::gateway::GatewayMultiplexer::new(&config.servers).await?;
+            // Never block the MCP `initialize` handshake on upstream gateway servers: each stdio
+            // upstream may take up to its 15s handshake timeout, and sequential connects previously
+            // delayed the IDE handshake by N x 15s (surfacing as "server failed to load").
+            // Upstreams get a 1.5s budget; slower ones finish in the background, are hot-swapped into
+            // the shared gateway, and the client is told to refresh via `tools/list_changed`.
+            let upstream_configs = config.servers.clone();
+            let (gateway, death_rx) = chronofact::gateway::GatewayMultiplexer::new(&[]).await?;
+            let mut pending_upstream = None;
+            if !upstream_configs.is_empty() {
+                let mut handle = tokio::spawn(async move {
+                    chronofact::gateway::GatewayMultiplexer::new(&upstream_configs).await
+                });
+                match tokio::time::timeout(std::time::Duration::from_millis(1500), &mut handle).await {
+                    Ok(Ok(Ok((connected_gw, connected_rx)))) => {
+                        if let Ok(lock) = Arc::try_unwrap(connected_gw) {
+                            *gateway.write().await = lock.into_inner();
+                        }
+                        let gw_for_watchdog = gateway.clone();
+                        let mut rx = connected_rx;
+                        tokio::spawn(async move {
+                            while let Some(dead_server) = rx.recv().await {
+                                let mut gw_guard = gw_for_watchdog.write().await;
+                                gw_guard.mark_server_disconnected(&dead_server);
+                            }
+                        });
+                    }
+                    Ok(Ok(Err(e))) => tracing::warn!("Gateway upstream initialization failed: {}", e),
+                    Ok(Err(e)) => tracing::warn!("Gateway upstream initialization task panicked: {}", e),
+                    Err(_) => pending_upstream = Some(handle),
+                }
+            }
             let gw_for_watchdog = gateway.clone();
+            let mut death_rx = death_rx;
             tokio::spawn(async move {
                 while let Some(dead_server) = death_rx.recv().await {
                     let mut gw_guard = gw_for_watchdog.write().await;
                     gw_guard.mark_server_disconnected(&dead_server);
                 }
             });
+            if let Some(handle) = pending_upstream {
+                let gw_target = gateway.clone();
+                tokio::spawn(async move {
+                    if let Ok(Ok((connected_gw, mut connected_rx))) = handle.await {
+                        if let Ok(lock) = Arc::try_unwrap(connected_gw) {
+                            *gw_target.write().await = lock.into_inner();
+                            McpServer::notify_tools_list_changed();
+                        }
+                        while let Some(dead_server) = connected_rx.recv().await {
+                            let mut gw_guard = gw_target.write().await;
+                            gw_guard.mark_server_disconnected(&dead_server);
+                        }
+                    }
+                });
+            }
             // Co-host the HTTP/SSE Epistemic Proxy & Cockpit API Server on 127.0.0.1:3030
             // whenever Antigravity launches `chronofact.exe mcp` so both SPINE and Cockpit UI always have live access.
             let state = Arc::new(AppState {

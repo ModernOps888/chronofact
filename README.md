@@ -1,7 +1,7 @@
 # ⚡ Project ChronoFact: The 4-Pillar Epistemic AI Backbone
 > **A High-Performance Rust Microservice, MCP Server, and React 19 Cockpit Combating Model Training Freezes, Hallucinations, Cross-Session Amnesia, and Token Cost Bleed.**
 
-[![Release: v1.4.0](https://img.shields.io/badge/release-v1.4.0-emerald.svg)](https://github.com/ModernOps888/chronofact/releases/tag/v1.4.0)
+[![Release: v1.4.1](https://img.shields.io/badge/release-v1.4.1-emerald.svg)](https://github.com/ModernOps888/chronofact/releases/tag/v1.4.1)
 [![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 [![CI Tests: 125/125 Passed](https://img.shields.io/badge/ci%20tests-125%2F125%20passed-brightgreen.svg)](https://github.com/ModernOps888/chronofact/actions)
 [![Security: Self-Assessed](https://img.shields.io/badge/security-self--assessed%20controls-blue.svg)](docs/SECURITY_AUDIT.md)
@@ -18,6 +18,20 @@ Large Language Models deployed in agentic environments suffer from four critical
 4. **Token Context Bloat & Cost Bleed**: Dumping massive schemas into prompts every turn, burning millions of tokens and breaking provider prompt caches.
 
 **ChronoFact** resolves all four failure modes with a zero-latency, local-first Rust engine (`tokio` + `axum` + `rusqlite` WAL) and an Antigravity MCP server:
+
+---
+
+## ⚡ What's New in v1.4.1 — Turn-Latency Audit
+
+Measured on the release binary with a JSON-RPC stdio harness (100 calls):
+
+| Defect found | Impact before | After v1.4.1 |
+|:---|:---|:---|
+| **MCP head-of-line blocking** — stdio requests processed strictly one at a time | A sub-millisecond `chronofact_temporal_check` waited **1,691 ms** behind a `chronofact_ground_query` web search (up to 60 s behind `gateway_call_tool`) | **0.61 ms** (concurrent dispatch + single ordered stdout writer) |
+| **Handshake blocked on upstream gateway servers** — each `servers.json` stdio upstream connected sequentially before `initialize` was answered (15 s handshake timeout each) | IDE MCP startup delayed by up to N × 15 s ("server failed to load") | `initialize` answered in **46 ms**; upstreams get a 1.5 s budget, slower ones finish in the background, are hot-swapped in, and the client receives `notifications/tools/list_changed` |
+| **Oversized stdin frames** (> 16 MB) were truncated, and the remainder was parsed as new requests | Stream desync | Drained to the next newline and rejected with JSON-RPC `-32600` |
+
+`chronofact_temporal_check` steady state: **0.44 ms avg / 0.81 ms P95**. On stdin EOF the server finishes in-flight calls, flushes, and exits (4 ms).
 
 ---
 

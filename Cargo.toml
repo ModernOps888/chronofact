@@ -1,6 +1,6 @@
 [package]
 name = "chronofact"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 description = "Epistemic AI Backbone: Combating Knowledge Cutoff, Hallucination, and Cross-Session Amnesia"
 authors = ["ChronoFact Team"]
