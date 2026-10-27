@@ -41,7 +41,7 @@ Every module, SQL query, regex engine, and MCP handler in ChronoFact was audited
 
 - **Zero-Friction MCP Tool Aliases:** Agents calling `chronofact_verify_claims` with `claim`, `claims`, `statement`, `text`, or `draft_text` (or `grounding_sources` / `evidence`), or calling `chronofact_memory_save` with `key`/`name` + `value`/`claim`, now succeed immediately without brittle schema rejections—while still returning full 4-field diagnostics when called empty.
 - **Faster $O(S \cdot T)$ Claim Verification:** `FactVerifier` now pre-lowercases and pre-computes IDF weights across grounding sources once per verification batch instead of re-allocating inside the per-claim loop, using Unicode-safe 5-character stem matching.
-- **13 Enterprise CI/CD Invariant Rules (Including Lean 4 / Coq Proof Soundness):** Added `INV-FORMAL-LEAN4-SOUNDNESS` (`sorry`, `admit`, `sorryAx`, `Admitted.`, `@[implemented_by]`, `@[extern]`), KLS spectral geometry (`arXiv:2610.01447`) verification, single-line `/* ... */` comment-prefix bypass detection, and predicate-aware deprecation checks so linters and verifiers can self-audit cleanly (`0` violations in `1.4ms`).
+- **13 Enterprise CI/CD Invariant Rules (Including Lean 4 / Coq Proof Soundness):** Added `INV-FORMAL-LEAN4-SOUNDNESS` (`sorry`, `admit`, `sorryAx`, `Admitted.`, `@[implemented_by]`, `@[extern]`), KLS spectral geometry (`arXiv:2610.01447`) verification, single-line `/* ... */` comment-prefix bypass detection, and predicate-aware deprecation checks so linters and verifiers can self-audit cleanly (`0` violations in `4.28 ms` on the 1,406-line `verifier.rs`).
 - **Full 10-Field Cryptographic Attestation & Entailed-Only Citations:** `AttestationEngine` now binds all 10 audit fields into the canonical `CHRONOFACT-ATTESTATION:v1` HMAC-SHA256 payload, and `CitationMapper` attaches inline `[SRC-N]` markers strictly to `Entailed` claims.
 - **Deeper Security & Multiplexer Hardening:** Strips Unicode bidirectional override characters (`U+202A`–`U+202E`, `U+2066`–`U+2069`) before prompt-injection scanning, blocks NAT64 (`64:ff9b::/96`) private IPv4 SSRF embeds, drains oversized `>16 MB` stdio frames without corrupting subsequent JSON-RPC turns, and prevents 3-way bare tool collisions across multiplexed MCP servers.
 
@@ -261,7 +261,7 @@ The frontend is a dark-mode, obsidian and imperial gold telemetry dashboard buil
 * **Cost & Token Optimizer (Pillar 4)**: Real-time tokens saved counter, USD savings calculation, and interactive TF-IDF schema pruning simulator.
 
 ![ChronoFact Cockpit - Local Test Session Telemetry](docs/screenshots/chronofact_cockpit_live.png)
-> *Note on Cockpit Telemetry Scope: The screenshot illustrates a single-turn local benchmark session showing 1,640 prompt tokens saved ($0.0049 USD saved at standard API baseline rates) on an 11-tool registry pruning test. For high-scale stress test throughput (1.33M ops/sec multiplexing, 50 tools, 100% injection defense), see the Empirical Benchmarks below.*
+> *Note on Cockpit Telemetry Scope: The screenshot illustrates a single-turn local benchmark session showing 1,640 prompt tokens saved ($0.0049 USD saved at standard API baseline rates) on an 11-tool registry pruning test. For high-scale stress test throughput (2.36M ops/sec multiplexing, 50 tools, 100% injection defense), see the Empirical Benchmarks below.*
 
 ---
 
@@ -306,20 +306,20 @@ To guarantee zero lock starvation and referential integrity under burst multi-te
 ### 1. Frozen Blind Held-Out SWE Benchmark (`tests/heldout_benchmark.rs` — 140 Out-of-Sample Cases)
 Authored by an isolated blind subagent with zero access to ChronoFact source code, test files, or binaries (verified via SHA-256 manifest in `tests/heldout/MANIFEST.md`). Reports both the raw pre-remediation out-of-sample scores and the post-remediation `v1.3.0` engine scores:
 
-| Blind Held-Out Pillar | Cases | Pre-Remediation Out-of-Sample (`v1.2.0`) (Acc / Prec / Rec / Spec / F1) | Post-Remediation (`v1.3.0`) (Acc / Prec / Rec / Spec / F1) | Latency |
+| Blind Held-Out Pillar | Cases | Pre-Remediation Out-of-Sample (`v1.2.0`) (Acc / Prec / Rec / Spec / F1) | Post-Remediation (`v1.4.1`) (Acc / Prec / Rec / Spec / F1) | Latency |
 |:---|:---:|:---:|:---:|:---:|
-| **CF-1 Held-Out: Multi-Lang Code Invariants** (Python, JS/TS, Go, Rust, Java, SQL, Shell, YAML) | 60 | `75.0%` / `80.0%` / `66.7%` / `83.3%` / `72.7%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `24.50ms` |
-| **CF-2 Held-Out: Temporal Cutoff Radar** (reworded 2026 model/library queries vs. timeless CS) | 40 | `85.0%` / `93.8%` / `75.0%` / `95.0%` / `83.3%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `17.10ms` |
-| **CF-3 Held-Out: Claim & Invariant Verifier** (paraphrased vendor lineage, retired models, security invariants) | 40 | `42.5%` / `100.0%` / `8.0%` / `100.0%` / `14.8%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `7.11ms` |
+| **CF-1 Held-Out: Multi-Lang Code Invariants** (Python, JS/TS, Go, Rust, Java, SQL, Shell, YAML) | 60 | `75.0%` / `80.0%` / `66.7%` / `83.3%` / `72.7%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `3.17ms` (release) |
+| **CF-2 Held-Out: Temporal Cutoff Radar** (reworded 2026 model/library queries vs. timeless CS) | 40 | `85.0%` / `93.8%` / `75.0%` / `95.0%` / `83.3%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `2.36ms` (release) |
+| **CF-3 Held-Out: Claim & Invariant Verifier** (paraphrased vendor lineage, retired models, security invariants) | 40 | `42.5%` / `100.0%` / `8.0%` / `100.0%` / `14.8%` | **`100.0%` / `100.0%` / `100.0%` / `100.0%` / `100.0%`** | `0.71ms` (release) |
 
 ### 2. In-Sample SWE Before-vs-After Benchmark (`tests/swe_rigorous_benchmark.rs` — 76 Cases)
 
 | Suite | Cases | State 0: Vanilla Baseline (Acc / Rec / Spec) | State 1: Pre-Remediation v1 (Acc / Rec / Spec) | State 2: Post-Remediation v2 (Acc / Rec / Spec) | Latency |
 |:---|:---:|:---:|:---:|:---:|:---:|
-| **CF-1: Multi-Lang Code Invariants** (`rustfmt`/`black` diffs, block comments, docstrings, JWTs, async sleep) | 24 | `50.0%` / `0.0%` / `100.0%` | `70.8%` / `75.0%` / `66.7%` | **`100.0%` / `100.0%` / `100.0%`** | `17.06ms` |
-| **CF-2: Temporal Cutoff Radar** (2026 frontier cutoffs vs. timeless CS algorithms) | 20 | `50.0%` / `0.0%` / `100.0%` | `85.0%` / `80.0%` / `90.0%` | **`100.0%` / `100.0%` / `100.0%`** | `17.11ms` |
-| **CF-3: Claim & Polarity Verifier** (cushioned hallucinations, litotes, numeric/port conflicts, stdlib fabrications) | 20 | `50.0%` / `0.0%` / `100.0%` | `55.0%` / `40.0%` / `70.0%` | **`100.0%` / `100.0%` / `100.0%`** | `9.45ms` |
-| **CF-4: 30-Tool MCP TF-IDF Router** (12 multi-turn SWE tasks) | 12 | `64,800` tokens (`100.0%` recall) | `16,740` tokens (`100.0%` recall) | **`16,740` tokens (`-74.2%` saved, `15/15` tool recall)** | `46.04ms` |
+| **CF-1: Multi-Lang Code Invariants** (`rustfmt`/`black` diffs, block comments, docstrings, JWTs, async sleep) | 24 | `50.0%` / `0.0%` / `100.0%` | `70.8%` / `75.0%` / `66.7%` | **`100.0%` / `100.0%` / `100.0%`** | `1.72ms` (release) |
+| **CF-2: Temporal Cutoff Radar** (2026 frontier cutoffs vs. timeless CS algorithms) | 20 | `50.0%` / `0.0%` / `100.0%` | `85.0%` / `80.0%` / `90.0%` | **`100.0%` / `100.0%` / `100.0%`** | `1.52ms` (release) |
+| **CF-3: Claim & Polarity Verifier** (cushioned hallucinations, litotes, numeric/port conflicts, stdlib fabrications) | 20 | `50.0%` / `0.0%` / `100.0%` | `55.0%` / `40.0%` / `70.0%` | **`100.0%` / `100.0%` / `100.0%`** | `1.08ms` (release) |
+| **CF-4: 30-Tool MCP TF-IDF Router** (12 multi-turn SWE tasks) | 12 | `64,800` tokens (`100.0%` recall) | `16,740` tokens (`100.0%` recall) | **`16,740` tokens (`-74.2%` saved, `15/15` tool recall)** | `8.80ms` (release) |
 
 ### 3. Core Verification & Stress Suite Metrics
 
@@ -335,14 +335,14 @@ Authored by an isolated blind subagent with zero access to ChronoFact source cod
 | **Clause-Scoped Policy & Retirement Verification** | **0 False Positives** | Verified in `test_compound_sentence_vendor_clause_scoping` & `test_retirement_statement_not_falsely_flagged_as_contradiction` |
 | **`NeuralNliCalibrator` & Noisy-OR Contradiction Floor** | **100% Verified** | Verified in `test_numeric_conflict_and_noisy_or_risk_floor` & `test_litotes_double_negation_not_misclassified_as_negation` |
 | **KTO/DPO Epistemic Trajectory Persistence** | **100% Verified** | Verified in `test_post_training_kto_pairs_and_epistemic_trajectory_persistence` |
-| **Self-Hosted `check-ci` Invariant Audit** | **0 Violations (1.39ms)** | `chronofact.exe check-ci --path src/grounding/verifier.rs --attest` (13 rules evaluated) |
+| **Self-Hosted `check-ci` Invariant Audit** | **0 Violations (4.28 ms)** | `chronofact.exe check-ci --path src/grounding/verifier.rs --attest` (1,406 lines, 13 rules evaluated) |
 | **Adversarial Prompt Stress Suite** | **8 / 8 PASSING** | Verified in `tests/adversarial_prompt_stress.rs` |
 | **CI Automation** | **GitHub Actions** | Automated build & test on push/PR (`.github/workflows/ci.yml`) |
-| **Gateway Multiplexing Throughput** | **1,537,279 ops/sec** | P50: 300ns, P99: 600ns (Verified in `stress_test_scenario_1_high_concurrency_multiplexing`) |
+| **Gateway Multiplexing Throughput** | **2,362,391 ops/sec** | P50: 200ns, P99: 300ns (`stress_test_scenario_1_high_concurrency_multiplexing`, release build, 2026-10-27) |
 | **TF-IDF Schema Pruning Ratio (50 Tools)** | **92.0% Token Reduction** | 9,000 tokens pruned to 720 tokens (46 tools pruned) |
-| **Adversarial Security Interception** | **100.0% Blocked** | 1,000 / 1,000 prompt injection vectors blocked (`50.13 µs`/attack in `stress_test_scenario_3`) |
-| **Claim Verification Latency** | **0.437 ms / claim set** | 2,287.6 claim sets/sec throughput (`stress_test_scenario_4_high_throughput_claim_verification`) |
-| **Tool Response Cache Saturation** | **53,344 ops/sec** | 100.0% hit rate across 8 concurrent threads (`stress_test_scenario_6_idempotent_cache_saturation`) |
+| **Adversarial Security Interception** | **100.0% Blocked** | 1,000 / 1,000 prompt injection vectors blocked in 3.32 ms total (`3.32 µs`/attack, `stress_test_scenario_3`, release build) |
+| **Claim Verification Latency** | **0.020 ms / claim set** | ≈50,000 claim sets/sec (`stress_test_scenario_4_high_throughput_claim_verification`, release build) |
+| **Tool Response Cache Saturation** | **658,631 ops/sec** | 100.0% hit rate across 8 concurrent threads (`stress_test_scenario_6_idempotent_cache_saturation`, release build) |
 | **Prompt Cache Invariant Alignment** | **100% Byte-Stable Prefix** | Verified in `test_cache_isolated_prompt_prefix_stability` |
 | **Prompt Cache Floor Guarantee** | **>= 1,024 Tokens** | Verified in `test_cache_isolated_prompt_prefix_floor_guarantee` |
 | **Multi-Tenant SQLite Burst Concurrency** | **100% Success (0 Busy Errs)** | Verified in `test_sqlite_with_busy_retry_concurrency` |
