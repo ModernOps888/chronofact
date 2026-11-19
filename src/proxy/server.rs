@@ -12,20 +12,51 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
 /// DNS-Rebinding & Host Header Guard for loopback HTTP server (`127.0.0.1:3030`).
-async fn loopback_host_guard(req: Request, next: Next) -> Result<Response, StatusCode> {
-    if let Some(host_val) = req.headers().get(header::HOST) {
-        let h = host_val.to_str().unwrap_or("");
-        let valid = h == "localhost"
-            || h == "127.0.0.1"
-            || h == "[::1]"
-            || h.starts_with("localhost:")
-            || h.starts_with("127.0.0.1:")
-            || h.starts_with("[::1]:");
-        if !valid {
-            return Err(StatusCode::FORBIDDEN);
+fn is_valid_loopback_host_header(host: &str) -> bool {
+    let trimmed = host.trim();
+    if let Some(rest) = trimmed.strip_prefix("[::1]") {
+        if rest.is_empty() {
+            return true;
         }
+        return rest
+            .strip_prefix(':')
+            .and_then(|p| p.parse::<u16>().ok())
+            .is_some();
+    }
+    if let Some((name, port_str)) = trimmed.rsplit_once(':') {
+        matches!(name, "localhost" | "127.0.0.1") && port_str.parse::<u16>().is_ok()
+    } else {
+        matches!(trimmed, "localhost" | "127.0.0.1")
+    }
+}
+
+async fn loopback_host_guard(req: Request, next: Next) -> Result<Response, StatusCode> {
+    let Some(host_val) = req.headers().get(header::HOST) else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+    let h = host_val.to_str().unwrap_or("");
+    if !is_valid_loopback_host_header(h) {
+        return Err(StatusCode::FORBIDDEN);
     }
     Ok(next.run(req).await)
+}
+
+async fn security_headers_middleware(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("x-frame-options"),
+        header::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("referrer-policy"),
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    resp
 }
 
 pub struct ApiServer {
@@ -41,13 +72,23 @@ impl ApiServer {
     pub fn router(&self) -> Router {
         let cors = CorsLayer::new()
             .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _| {
-                if let Ok(s) = origin.to_str() {
-                    s.starts_with("http://localhost:")
-                        || s.starts_with("http://127.0.0.1:")
-                        || s.starts_with("http://[::1]:")
-                } else {
-                    false
+                let Ok(s) = origin.to_str() else {
+                    return false;
+                };
+                let Ok(parsed) = url::Url::parse(s) else {
+                    return false;
+                };
+                if parsed.scheme() != "http" || !parsed.username().is_empty() || parsed.password().is_some() {
+                    return false;
                 }
+                let host_ok = matches!(
+                    parsed.host_str(),
+                    Some("localhost") | Some("127.0.0.1") | Some("[::1]")
+                );
+                let port_ok = parsed
+                    .port()
+                    .map_or(false, |p| matches!(p, 3000 | 3030 | 3333 | 4173 | 5173 | 8080));
+                host_ok && port_ok
             }))
             .allow_methods(Any)
             .allow_headers(Any);
@@ -69,6 +110,7 @@ impl ApiServer {
             .route("/api/gateway/servers", get(list_gateway_servers).post(register_gateway_server))
             .route("/api/gateway/tools", get(list_gateway_tools))
             .route("/api/gateway/call", post(call_gateway_tool))
+            .layer(middleware::from_fn(security_headers_middleware))
             .layer(middleware::from_fn(loopback_host_guard))
             .layer(cors)
             .with_state(self.state.clone())

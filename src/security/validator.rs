@@ -35,15 +35,24 @@ impl SecurityValidator {
 
         // Fast-path block for obvious localhost strings
         let lower_host = host_str.to_lowercase();
-        if lower_host == "localhost" || lower_host.ends_with(".local") || lower_host.ends_with(".internal") {
+        if lower_host == "localhost"
+            || lower_host.ends_with(".localhost")
+            || lower_host.ends_with(".local")
+            || lower_host.ends_with(".internal")
+        {
             return Err(SecurityError::SsrfBlocked(host_str.to_string()));
         }
 
         // 3. Resolve DNS and inspect target IP addresses
         let port = parsed.port_or_known_default().unwrap_or(80);
-        let socket_addrs = format!("{}:{}", host_str, port)
+        let socket_addrs: Vec<_> = format!("{}:{}", host_str, port)
             .to_socket_addrs()
-            .map_err(|e| SecurityError::InvalidUrl(format!("DNS resolution failed: {}", e)))?;
+            .map_err(|e| SecurityError::InvalidUrl(format!("DNS resolution failed: {}", e)))?
+            .collect();
+
+        if socket_addrs.is_empty() {
+            return Err(SecurityError::InvalidUrl("DNS resolution returned no addresses".to_string()));
+        }
 
         for addr in socket_addrs {
             let ip = addr.ip();
@@ -93,9 +102,13 @@ impl SecurityValidator {
                     return Self::is_private_or_restricted_ip(IpAddr::V4(v4));
                 }
                 let segs = v6.segments();
-                // Check IPv4-compatible IPv6 (::x.x.x.x) or NAT64 well-known prefix (64:ff9b::/96)
+                // Check IPv4-compatible IPv6 (::x.x.x.x) or NAT64 well-known prefix (64:ff9b::/96) or local NAT64 (64:ff9b:1::/48)
                 let is_v4_compat = segs[0] == 0 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0 && segs[4] == 0 && segs[5] == 0;
                 let is_nat64 = segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2] == 0 && segs[3] == 0 && segs[4] == 0 && segs[5] == 0;
+                let is_nat64_local = segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2] == 0x0001;
+                if is_nat64_local {
+                    return true;
+                }
                 if is_v4_compat || is_nat64 {
                     let v4 = std::net::Ipv4Addr::new(
                         (segs[6] >> 8) as u8,
@@ -104,6 +117,25 @@ impl SecurityValidator {
                         segs[7] as u8,
                     );
                     return Self::is_private_or_restricted_ip(IpAddr::V4(v4));
+                }
+                // Check 6to4 (2002::/16) embedded IPv4 address
+                if segs[0] == 0x2002 {
+                    let v4 = std::net::Ipv4Addr::new(
+                        (segs[1] >> 8) as u8,
+                        segs[1] as u8,
+                        (segs[2] >> 8) as u8,
+                        segs[2] as u8,
+                    );
+                    if Self::is_private_or_restricted_ip(IpAddr::V4(v4)) {
+                        return true;
+                    }
+                }
+                // Check Teredo (2001:0000::/32), Discard-only (0100::/64), and Documentation (2001:0db8::/32)
+                if (segs[0] == 0x2001 && segs[1] == 0x0000)
+                    || (segs[0] == 0x0100 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0)
+                    || (segs[0] == 0x2001 && segs[1] == 0x0db8)
+                {
+                    return true;
                 }
                 // Check IPv6 Unique Local addresses (fc00::/7)
                 let seg0 = segs[0];
@@ -125,37 +157,114 @@ impl SecurityValidator {
 
     /// Enforces that a filesystem path stays safely inside a root workspace directory
     pub fn validate_safe_path(root: &Path, target: &Path) -> Result<PathBuf, SecurityError> {
+        if let Some(s) = target.to_str() {
+            if Self::is_network_or_device_path(s) {
+                return Err(SecurityError::PathTraversal(
+                    "Network UNC or device path rejected".to_string(),
+                ));
+            }
+        }
         let canonical_root = root.canonicalize().map_err(|e| {
             SecurityError::PathTraversal(format!("Cannot canonicalize root: {}", e))
         })?;
 
-        let candidate = if target.is_relative() {
-            canonical_root.join(target)
-        } else {
-            target.to_path_buf()
-        };
-
-        // Canonicalize candidate if it exists, or check clean normalized path
-        let canonical_candidate = match candidate.canonicalize() {
-            Ok(c) => c,
-            Err(_) => {
-                // If file doesn't exist yet, inspect normalized components
-                let mut normalized = PathBuf::new();
-                for comp in candidate.components() {
-                    match comp {
-                        std::path::Component::ParentDir => {
-                            if !normalized.pop() {
-                                return Err(SecurityError::PathTraversal("Path escapes root via ..".to_string()));
-                            }
+        // First lexically normalize without allowing `..` to escape either `root` (for relative paths)
+        // or filesystem root (for absolute paths) — prevents Windows `C:\..\..` canonicalizing back to `C:\`.
+        let normalized_candidate = if target.is_relative() {
+            let mut buf = canonical_root.clone();
+            let mut rel_depth: usize = 0;
+            for comp in target.components() {
+                match comp {
+                    std::path::Component::Normal(p) => {
+                        buf.push(p);
+                        rel_depth += 1;
+                    }
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        if rel_depth == 0 {
+                            return Err(SecurityError::PathTraversal(
+                                "Path escapes root via ..".to_string(),
+                            ));
                         }
-                        std::path::Component::Normal(c) => normalized.push(c),
-                        std::path::Component::RootDir | std::path::Component::Prefix(_) => {
-                            normalized.push(comp);
-                        }
-                        _ => {}
+                        rel_depth -= 1;
+                        buf.pop();
+                    }
+                    std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                        return Err(SecurityError::PathTraversal(
+                            "Unexpected root/prefix in relative path".to_string(),
+                        ));
                     }
                 }
-                normalized
+            }
+            buf
+        } else {
+            let mut buf = PathBuf::new();
+            let mut norm_depth: usize = 0;
+            for comp in target.components() {
+                match comp {
+                    std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                        buf.push(comp.as_os_str());
+                    }
+                    std::path::Component::Normal(p) => {
+                        buf.push(p);
+                        norm_depth += 1;
+                    }
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        if norm_depth == 0 {
+                            return Err(SecurityError::PathTraversal(
+                                "Path escapes filesystem root via ..".to_string(),
+                            ));
+                        }
+                        norm_depth -= 1;
+                        buf.pop();
+                    }
+                }
+            }
+            buf
+        };
+
+        // Canonicalize candidate if it exists, otherwise canonicalize the deepest existing ancestor
+        // (prevents symlink traversal through an intermediate existing directory when leaf doesn't exist)
+        let canonical_candidate = match normalized_candidate.canonicalize() {
+            Ok(c) => c,
+            Err(_) => {
+                let mut suffix_parts: Vec<std::ffi::OsString> = Vec::new();
+                let mut probe = normalized_candidate.as_path();
+                let canonical_ancestor = loop {
+                    if let Ok(canon) = probe.canonicalize() {
+                        break canon;
+                    }
+                    let name = probe.file_name().ok_or_else(|| {
+                        SecurityError::PathTraversal("Cannot resolve existing ancestor within root".to_string())
+                    })?;
+                    if name == ".." {
+                        return Err(SecurityError::PathTraversal("Path escapes root via ..".to_string()));
+                    }
+                    suffix_parts.push(name.to_os_string());
+                    probe = probe.parent().ok_or_else(|| {
+                        SecurityError::PathTraversal("Path escapes filesystem root".to_string())
+                    })?;
+                };
+
+                if !canonical_ancestor.starts_with(&canonical_root) {
+                    return Err(SecurityError::PathOutsideRoot(format!(
+                        "Existing ancestor {:?} is outside root {:?}",
+                        canonical_ancestor, canonical_root
+                    )));
+                }
+
+                let mut resolved = canonical_ancestor;
+                for part in suffix_parts.into_iter().rev() {
+                    if part == "." {
+                        continue;
+                    }
+                    if part == ".." {
+                        return Err(SecurityError::PathTraversal("Path escapes root via ..".to_string()));
+                    }
+                    resolved.push(part);
+                }
+                resolved
             }
         };
 
@@ -167,5 +276,46 @@ impl SecurityValidator {
         }
 
         Ok(canonical_candidate)
+    }
+
+    /// Returns true if a path targets a Windows UNC network share, device namespace, reserved DOS device name, or contains NUL bytes.
+    pub fn is_network_or_device_path(raw: &str) -> bool {
+        let trimmed = raw.trim();
+        if trimmed.contains('\0')
+            || trimmed.starts_with("\\\\")
+            || trimmed.starts_with("//")
+        {
+            return true;
+        }
+        let tail = trimmed
+            .rsplit(|c| c == '/' || c == '\\')
+            .find(|seg| !seg.is_empty())
+            .unwrap_or("");
+        let stem = tail.split('.').next().unwrap_or("").to_ascii_uppercase();
+        matches!(
+            stem.as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        )
     }
 }

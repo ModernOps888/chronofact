@@ -52,6 +52,23 @@ impl StdioConnection {
         let mut cmd = tokio::process::Command::new(command);
         cmd.args(&config.args);
 
+        // Scrub sensitive parent credentials before inheriting/applying server-specific env
+        for sensitive_key in [
+            "TAVILY_API_KEY",
+            "BRAVE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "CHRONOFACT_ATTESTATION_KEY",
+            "SPINE_ATTESTATION_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+        ] {
+            cmd.env_remove(sensitive_key);
+        }
+
         for (k, v) in &config.env {
             cmd.env(k, v);
         }
@@ -80,13 +97,33 @@ impl StdioConnection {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout for server '{}'", config.name))?;
 
-        // Drain stderr asynchronously to prevent OS pipe buffer exhaustion deadlocks
+        // Drain stderr asynchronously with a per-line cap (64 KB) to prevent pipe deadlocks and OOM
         if let Some(stderr) = child.stderr.take() {
             let stderr_server_name = config.name.clone();
             tokio::spawn(async move {
-                let mut reader = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    debug!(target: "gateway_child_stderr", server = %stderr_server_name, "{}", line);
+                const MAX_STDERR_LINE_BYTES: u64 = 64 * 1024;
+                let mut reader = BufReader::new(stderr);
+                let mut line_buf = Vec::new();
+                loop {
+                    line_buf.clear();
+                    match (&mut reader).take(MAX_STDERR_LINE_BYTES).read_until(b'\n', &mut line_buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if n as u64 == MAX_STDERR_LINE_BYTES && !line_buf.ends_with(b"\n") {
+                                let mut sink = Vec::new();
+                                loop {
+                                    sink.clear();
+                                    match (&mut reader).take(MAX_STDERR_LINE_BYTES).read_until(b'\n', &mut sink).await {
+                                        Ok(0) | Err(_) => break,
+                                        Ok(_) if sink.ends_with(b"\n") => break,
+                                        Ok(_) => continue,
+                                    }
+                                }
+                            }
+                            let line = String::from_utf8_lossy(&line_buf);
+                            debug!(target: "gateway_child_stderr", server = %stderr_server_name, "{}", line.trim_end());
+                        }
+                    }
                 }
             });
         }
@@ -227,12 +264,23 @@ impl StdioConnection {
             Ok::<(), std::io::Error>(())
         };
 
-        if tokio::time::timeout(Duration::from_secs(5), write_fut).await.is_err() {
-            self.remove_pending(id);
-            return Err(anyhow::anyhow!(
-                "Timed out writing to stdin of '{}' (child process may be unresponsive)",
-                self.server_name
-            ));
+        match tokio::time::timeout(Duration::from_secs(5), write_fut).await {
+            Err(_) => {
+                self.remove_pending(id);
+                return Err(anyhow::anyhow!(
+                    "Timed out writing to stdin of '{}' (child process may be unresponsive)",
+                    self.server_name
+                ));
+            }
+            Ok(Err(e)) => {
+                self.remove_pending(id);
+                return Err(anyhow::anyhow!(
+                    "Failed writing to stdin of '{}': {}",
+                    self.server_name,
+                    e
+                ));
+            }
+            Ok(Ok(())) => {}
         }
 
         debug!("📤 [{}] → {} (id={})", self.server_name, method, id);

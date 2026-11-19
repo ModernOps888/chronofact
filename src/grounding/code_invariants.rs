@@ -96,7 +96,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects direct string concatenation or formatting inside SQL queries across Rust, TypeScript/JS, Python, and Go, risking SQL injection.".to_string(),
-                pattern: r#"(?i)(?:format!\s*\(\s*"[^"]*\b(?:SELECT\s+[^"]*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b[^"]*\{|fmt\.Sprintf\s*\(\s*"[^"]*\b(?:SELECT\s+[^"]*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b[^"]*%[svqd]|\b(?:SELECT\s+.*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_])|[rb]?f(?:"[^"]*\b(?:select\s+.*\bfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table|alter\s+table)\b[^"]*\{|'[^']*\b(?:select\s+.*\bfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table|alter\s+table)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
+                pattern: r#"(?i)(?:format!\s*\(\s*"[^"]*\b(?:SELECT\s+[^"]*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b[^"]*\{|fmt\.Sprintf\s*\(\s*"[^"]*\b(?:SELECT\s+[^"]*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b[^"]*%[svqd]|\b(?:SELECT\s+.*\bFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b.*(?:\$\{.*\}|\+\s*[a-zA-Z_@])|text\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\.raw\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|[rb]?f(?:"[^"]*\b(?:select\s+.*\bfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table|alter\s+table)\b[^"]*\{|'[^']*\b(?:select\s+.*\bfrom|insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+table|alter\s+table)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*[rb]?f(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*\{|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*\{)|\b(?:execute|executemany|executescript|query|raw|read_sql)\s*\(\s*(?:"[^"]*\b(?:select|insert|update|delete|drop|alter)\b[^"]*"|'[^']*\b(?:select|insert|update|delete|drop|alter)\b[^']*')\s*(?:%\s*[\w(\[]|\.format\s*\())"#.to_string(),
                 remediation: "Use parameterized queries ($1, ?), prepared statements, or an approved query builder/ORM.".to_string(),
             },
             InvariantRule {
@@ -105,7 +105,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects arbitrary code execution primitives (eval, exec, Invoke-Expression), shell injection, or unsanitized DOM rendering.".to_string(),
-                pattern: r#"(?:\beval\s*\(|\beval\s+["'$]|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.system\s*\(|dangerouslySetInnerHTML|child_process\.exec\s*\(|\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True|\bInvoke-Expression\b|\biex\s+\$|\bset(?:Timeout|Interval)\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*[,)])"#.to_string(),
+                pattern: r#"(?:\beval\s*\(|\beval\s+["'$]|(?:^|[^.\w])exec\s*\(|\bnew\s+Function\s*\(|(?:^|[^.\w])Function\s*\(|\bos\.(?:system|popen)\s*\(|dangerouslySetInnerHTML|\.(?:innerHTML|outerHTML)\s*=|\bdocument\.write\s*\(|\bbypassSecurityTrustHtml\s*\(|child_process\.exec\s*\(|\b(?:spawn|execFile)(?:Sync)?\s*\([^;]*\bshell\s*:\s*true|\bCommand::new\s*\(\s*["'](?:sh|bash|cmd|powershell|pwsh)["']\s*\).*?["'](?:-c|/c|/C)["'].*?(?:format!|\.arg\s*\()|\bexec\.Command\s*\(\s*["'](?:sh|bash|cmd)["']\s*,\s*["'](?:-c|/c|/C)["']|\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True|\bInvoke-Expression\b|\biex\s+\$|\bset(?:Timeout|Interval)\s*\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*[,)])"#.to_string(),
                 remediation: "Avoid runtime string code evaluation; use parameterized argument arrays without shell=True and sanitize DOM nodes.".to_string(),
             },
             InvariantRule {
@@ -114,7 +114,7 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::Critical,
                 description: "Detects hardcoded high-entropy tokens, AWS keys, GitHub PATs, Stripe/OpenRouter/OpenAI keys, JWTs, or PEM private keys.".to_string(),
-                pattern: r#"(?:AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36}|sk-(?:or-v1-)?[a-zA-Z0-9]{32,}|\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{20,}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----|(?i)(?:api_key|secret_key|private_key|auth_token)\s*[:=]\s*["'][A-Za-z0-9_\-\.]{16,}["'])"#.to_string(),
+                pattern: r#"(?:AKIA[0-9A-Z]{16}|(?:ghp|gho|ghu|ghs)_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_\-]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}|AIza[0-9A-Za-z_\-]{35}|sk-(?:or-v1-|proj-|ant-)?[a-zA-Z0-9_\-]{24,}|\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{20,}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE\s+KEY-----|(?i)(?:api_key|secret_key|private_key|auth_token|aws_secret_access_key)\s*[:=]\s*["'][A-Za-z0-9_\-\./+=]{16,}["'])"#.to_string(),
                 remediation: "Extract secrets into secure environment variables, cloud secrets vaults, or KMS.".to_string(),
             },
             InvariantRule {
@@ -122,8 +122,8 @@ impl CodeInvariantChecker {
                 name: "Memory-Unsafe C/C++/CUDA Buffer Call or Unguarded Rust Transmute".to_string(),
                 category: "Security".to_string(),
                 severity: InvariantSeverity::High,
-                description: "Detects banned unbounded C/C++/CUDA buffer functions (strcpy, strcat, sprintf, gets) or unguarded Rust std::mem::transmute / from_utf8_unchecked.".to_string(),
-                pattern: r#"(?:\b(?:strcpy|strcat|sprintf|vsprintf|gets)\s*\(|\bstd::mem::transmute\b|\bfrom_utf8_unchecked\s*\()"#.to_string(),
+                description: "Detects banned unbounded C/C++/CUDA buffer functions (strcpy, strcat, sprintf, gets) or unguarded Rust std::mem::transmute / from_utf8_unchecked / *const->*mut cast.".to_string(),
+                pattern: r#"(?:\b(?:strcpy|strcat|sprintf|vsprintf|gets)\s*\(|\bstd::mem::transmute\b|\bfrom_utf8_unchecked\s*\(|as\s+\*const\s+\w+\s+as\s+\*mut\s+\w+)"#.to_string(),
                 remediation: "In C/C++/CUDA use bounds-checked snprintf/strncpy; in Rust use safe conversions (TryFrom, bytemuck, std::str::from_utf8).".to_string(),
             },
             InvariantRule {
@@ -132,17 +132,17 @@ impl CodeInvariantChecker {
                 category: "Security".to_string(),
                 severity: InvariantSeverity::High,
                 description: "Detects direct filesystem reads from untrusted request parameters or arbitrary object deserialization (pickle.loads, yaml.load without SafeLoader, marshal.loads).".to_string(),
-                pattern: r#"(?:\b(?:pickle|marshal|shelve)\.loads?\s*\(|\byaml\.load\s*\([^,)]+\)|(?:fs::read|fs\.readFile|fs\.readFileSync|http\.ServeFile)\s*\([^)]*(?:req\.|request\.|params\.|query\.))"#.to_string(),
+                pattern: r#"(?:\b(?:pickle|marshal|shelve)\.loads?\s*\(|\byaml\.load\s*\([^,)]+\)|(?:fs::read(?:_to_string)?|fs\.readFile|fs\.readFileSync|http\.ServeFile|res\.sendFile|os\.ReadFile|open)\s*\([^;]*(?:req\.|request\.|params\.|query\.|r\.URL))"#.to_string(),
                 remediation: "Canonicalize and restrict file paths within a base directory; use yaml.safe_load or structured JSON schemas instead of pickle.".to_string(),
             },
             InvariantRule {
                 id: "INV-SEC-WEAK-CRYPTO-TLS".to_string(),
-                name: "Disabled TLS Certificate Validation or Broken Cryptographic Hash".to_string(),
+                name: "Disabled TLS Certificate Validation, JWT Bypass, or Weak Crypto/PRNG".to_string(),
                 category: "Security".to_string(),
                 severity: InvariantSeverity::High,
-                description: "Detects disabled TLS verification across Rust, TypeScript/Node, Python, and Go, or MD5/SHA1 password hashing.".to_string(),
-                pattern: r#"(?:danger_accept_invalid_certs\s*\(\s*true\s*\)|rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*["']0["']|InsecureSkipVerify\s*:\s*true|\bverify\s*=\s*False\b|(?i)(?:md5|sha1)\s*\([^)]*password)"#.to_string(),
-                remediation: "Enforce strict TLS certificate verification and use Argon2id, bcrypt, or SHA-256/HMAC-SHA256.".to_string(),
+                description: "Detects disabled TLS verification, skipped JWT signature checks, non-CSPRNG token generation, or MD5/SHA1 password hashing.".to_string(),
+                pattern: r#"(?:danger_accept_invalid_certs\s*\(\s*true\s*\)|rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*["']0["']|InsecureSkipVerify\s*:\s*true|\bverify\s*=\s*False\b|verify_signature["']?\s*[:=]\s*[Ff]alse|algorithms\s*[:=]\s*\[[^\]]*["']none["']|ignoreExpiration\s*:\s*true|(?i)(?:md5|sha1)\s*\([^)]*(?:password|salt)|(?i)(?:token|session|secret|nonce|reset)\w*\s*[:=].*Math\.random\s*\(\s*\))"#.to_string(),
+                remediation: "Enforce strict TLS/JWT signature verification, use CSPRNG for tokens, and Argon2id or SHA-256/HMAC-SHA256.".to_string(),
             },
             InvariantRule {
                 id: "INV-ARCH-DAL-LEAK".to_string(),
@@ -159,7 +159,7 @@ impl CodeInvariantChecker {
                 category: "TemporalDeprecation".to_string(),
                 severity: InvariantSeverity::High,
                 description: "Detects sunsetted libraries (moment, request, distutils, new Buffer, ioutil.ReadAll), retired pre-2026 AI model IDs, or vendor misattributions.".to_string(),
-                pattern: r#"(?:from\s*["'](?:moment|request|urllib3)["']|require\(["'](?:moment|request)["']\)|\bfrom\s+distutils\b|\bimport\s+distutils\b|\bnew\s+Buffer\s*\(|\bioutil\.(?:ReadAll|ReadFile|WriteFile|TempDir|TempFile)\b|(?i)["'](?:claude-3-5-(?:sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-(?:opus|sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-7-sonnet(?:-\d{8}|-latest)?|gpt-4-(?:0613|0314|turbo-preview|1106-preview)|text-davinci-00[23]|grok-[23](?:-mini|-latest)?|(?:google|anthropic)/(?:astra-6|sol-6\.1))["'])"#.to_string(),
+                pattern: r#"(?:from\s*["'](?:moment|request)["']|require\(["'](?:moment|request)["']\)|\bfrom\s+distutils\b|\bimport\s+distutils\b|\bnew\s+Buffer\s*\(|\bioutil\.(?:ReadAll|ReadFile|WriteFile|TempDir|TempFile)\b|(?i)["'](?:claude-3-5-(?:sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-(?:opus|sonnet|haiku)(?:-\d{8}|-latest)?|claude-3-7-sonnet(?:-\d{8}|-latest)?|gpt-4-(?:0613|0314|turbo-preview|1106-preview)|text-davinci-00[23]|grok-[23](?:-mini|-latest)?|(?:google|anthropic)/(?:astra-6|sol-6\.1))["'])"#.to_string(),
                 remediation: "Replace with active 2026 standards: moment -> date-fns/Luxon; request -> fetch/reqwest; distutils -> setuptools; new Buffer -> Buffer.from; ioutil -> io/os; retired models -> claude-sonnet-5-5 / claude-opus-5-5 / openai/gpt-6-astra / google/gemini-4-argon / x-ai/grok-4.7.".to_string(),
             },
             InvariantRule {
@@ -232,8 +232,12 @@ impl CodeInvariantChecker {
 
         let mut compiled_custom: Vec<(InvariantRule, Regex)> = Vec::new();
         if let Some(custom) = custom_rules {
-            for r in custom {
-                if let Ok(re) = Regex::new(&r.pattern) {
+            for r in custom.iter().take(64) {
+                if let Ok(re) = regex::RegexBuilder::new(&r.pattern)
+                    .size_limit(1 << 20)
+                    .dfa_size_limit(1 << 20)
+                    .build()
+                {
                     compiled_custom.push((r.clone(), re));
                 }
             }
@@ -276,92 +280,88 @@ impl CodeInvariantChecker {
                 || header_lower.contains("controllers/")
                 || header_lower.contains("presentation layer"));
 
-        let has_any_fn_decl = content.contains("fn ") || content.contains("function ") || content.contains("def ");
-        let content_lower = content.to_lowercase();
-        let has_ssrf_allowlist = content_lower.contains("allowed_hosts")
-            || content_lower.contains("allowlist")
-            || content_lower.contains("whitelist")
-            || content_lower.contains("urlparse");
-        let has_untrusted_url_param = content.contains("request.args[")
-            || content.contains("request.args.get(")
-            || content.contains("req.query.")
-            || content.contains("req.params.")
-            || content.contains("r.URL.Query()");
-        let has_dompurify = content.contains("DOMPurify.sanitize") || content.contains("sanitizeHtml(");
-        let has_spawn_blocking = content.contains("spawn_blocking")
-            || content.contains("run_in_executor")
-            || content.contains("asyncio.to_thread");
-        let has_sql_table_allowlist = content.contains("TABLES = {")
-            || content.contains("ALLOWED_TABLES")
-            || content.contains("VALID_TABLES");
         let file_lower = file_path.to_lowercase();
-        let is_formal_proof_context = file_lower.ends_with(".lean")
-            || file_lower.ends_with(".lean4")
-            || file_lower.ends_with(".v")
-            || content.contains("theorem ")
-            || content.contains("lemma ")
-            || content.contains(":= by")
-            || content.contains("Admitted.");
+        let is_rust_file = file_lower.ends_with(".rs");
+        let is_sql_file = file_lower.ends_with(".sql");
+        let is_hash_comment_lang = file_lower.ends_with(".py")
+            || file_lower.ends_with(".sh")
+            || file_lower.ends_with(".bash")
+            || file_lower.ends_with(".ps1")
+            || file_lower.ends_with(".yml")
+            || file_lower.ends_with(".yaml")
+            || file_lower.ends_with(".rb")
+            || file_lower.ends_with(".toml")
+            || file_lower.contains(".env");
 
+        // Pass 1: Build comment-stripped logical code lines while preserving string literals and
+        // tracking multi-line /* ... */, /- ... -/, and Python """ ... """ docstrings.
+        let mut code_lines: Vec<String> = Vec::with_capacity(lines.len());
         let mut in_block_comment = false;
         let mut in_lean_block_comment = false;
         let mut in_py_docstring = false;
-        let mut in_async_scope = !has_any_fn_decl;
-        let mut sql_window_skip_until: usize = 0;
 
-        for (idx, line) in lines.iter().enumerate() {
-            let line_num = idx + 1;
-            let trimmed = line.trim();
-
-            // Track multi-line /* ... */ block comments statefully
+        for raw_line in &lines {
+            let trimmed = raw_line.trim();
             if in_block_comment {
                 if let Some(end_pos) = trimmed.find("*/") {
                     in_block_comment = false;
                     let after = trimmed[end_pos + 2..].trim();
                     if after.is_empty() {
+                        code_lines.push(String::new());
                         continue;
                     }
-                } else {
+                    code_lines.push(strip_inline_comments(after, is_rust_file, is_sql_file, is_hash_comment_lang));
                     continue;
                 }
+                code_lines.push(String::new());
+                continue;
             }
             if trimmed.starts_with("/*") {
                 if let Some(end_rel) = trimmed[2..].find("*/") {
                     let after = trimmed[2 + end_rel + 2..].trim();
                     if after.is_empty() {
+                        code_lines.push(String::new());
                         continue;
                     }
+                    code_lines.push(strip_inline_comments(after, is_rust_file, is_sql_file, is_hash_comment_lang));
+                    continue;
                 } else {
                     in_block_comment = true;
+                    code_lines.push(String::new());
                     continue;
                 }
             }
 
-            // Track Lean 4 /- ... -/ block comments statefully
             if in_lean_block_comment {
                 if let Some(end_pos) = trimmed.find("-/") {
                     in_lean_block_comment = false;
                     let after = trimmed[end_pos + 2..].trim();
                     if after.is_empty() {
+                        code_lines.push(String::new());
                         continue;
                     }
-                } else {
+                    code_lines.push(after.to_string());
                     continue;
                 }
+                code_lines.push(String::new());
+                continue;
             }
             if trimmed.starts_with("/-") {
                 if let Some(end_rel) = trimmed[2..].find("-/") {
                     let after = trimmed[2 + end_rel + 2..].trim();
                     if after.is_empty() {
+                        code_lines.push(String::new());
                         continue;
                     }
+                    code_lines.push(after.to_string());
+                    continue;
                 } else {
                     in_lean_block_comment = true;
+                    code_lines.push(String::new());
                     continue;
                 }
             }
 
-            // Track multi-line Python """ ... """ or ''' ... ''' docstrings statefully
             let triple_delim = if trimmed.contains("\"\"\"") {
                 Some("\"\"\"")
             } else if trimmed.contains("'''") {
@@ -373,6 +373,7 @@ impl CodeInvariantChecker {
                 if triple_delim.is_some() {
                     in_py_docstring = false;
                 }
+                code_lines.push(String::new());
                 continue;
             }
             if let Some(delim) = triple_delim {
@@ -381,20 +382,74 @@ impl CodeInvariantChecker {
                     if !rest.contains(delim) {
                         in_py_docstring = true;
                     }
+                    code_lines.push(String::new());
                     continue;
                 }
             }
 
+            let is_hash_line_comment = trimmed.starts_with('#')
+                && !trimmed.starts_with("#[")
+                && !trimmed.starts_with("#![")
+                && !trimmed.starts_with("#include")
+                && !trimmed.starts_with("#define")
+                && !trimmed.starts_with("#pragma")
+                && !trimmed.starts_with("#if")
+                && !trimmed.starts_with("#elif")
+                && !trimmed.starts_with("#else")
+                && !trimmed.starts_with("#endif");
+
             if trimmed.is_empty()
                 || trimmed.starts_with("//")
-                || trimmed.starts_with('#')
+                || is_hash_line_comment
                 || trimmed.starts_with("--")
                 || trimmed == "*"
                 || trimmed.starts_with("* ")
                 || trimmed.starts_with("*/")
             {
+                code_lines.push(String::new());
                 continue;
             }
+
+            code_lines.push(strip_inline_comments(raw_line, is_rust_file, is_sql_file, is_hash_comment_lang));
+        }
+
+        let stripped_code_all = code_lines.join("\n");
+        let stripped_lower = stripped_code_all.to_lowercase();
+        let has_any_fn_decl = stripped_code_all.contains("fn ")
+            || stripped_code_all.contains("function ")
+            || stripped_code_all.contains("def ");
+        let has_ssrf_allowlist = stripped_lower.contains("allowed_hosts")
+            || stripped_lower.contains("allowlist")
+            || stripped_lower.contains("whitelist")
+            || stripped_lower.contains("validate_outbound_url")
+            || stripped_lower.contains("is_private_or_restricted_ip");
+        let has_untrusted_url_param = stripped_code_all.contains("request.args[")
+            || stripped_code_all.contains("request.args.get(")
+            || stripped_code_all.contains("req.query.")
+            || stripped_code_all.contains("req.params.")
+            || stripped_code_all.contains("r.URL.Query()");
+        let has_sql_table_allowlist = stripped_code_all.contains("TABLES = {")
+            || stripped_code_all.contains("ALLOWED_TABLES")
+            || stripped_code_all.contains("VALID_TABLES");
+        let is_formal_proof_context = file_lower.ends_with(".lean")
+            || file_lower.ends_with(".lean4")
+            || file_lower.ends_with(".v")
+            || stripped_code_all.contains("theorem ")
+            || stripped_code_all.contains("lemma ")
+            || stripped_code_all.contains(":= by")
+            || stripped_code_all.contains("Admitted.");
+
+        let mut in_async_scope = !has_any_fn_decl;
+        let mut spawn_blocking_line: Option<usize> = None;
+        let mut sql_window_skip_until: usize = 0;
+
+        for (idx, code_line) in code_lines.iter().enumerate() {
+            let line_num = idx + 1;
+            let trimmed = code_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let line = code_line.as_str();
 
             // Track async vs synchronous function scope for INV-REL-ASYNC-BLOCKING
             if trimmed.contains("async fn ")
@@ -405,12 +460,21 @@ impl CodeInvariantChecker {
                 || trimmed.starts_with("#[tokio::")
             {
                 in_async_scope = true;
+                spawn_blocking_line = None;
             } else if (trimmed.starts_with("pub fn ")
                 || trimmed.starts_with("fn ")
                 || trimmed.starts_with("def "))
                 && !trimmed.contains("async ")
             {
                 in_async_scope = false;
+                spawn_blocking_line = None;
+            }
+
+            if trimmed.contains("spawn_blocking")
+                || trimmed.contains("run_in_executor")
+                || trimmed.contains("asyncio.to_thread")
+            {
+                spawn_blocking_line = Some(idx);
             }
 
             for (rule, regex) in self.built_in_rules.iter().chain(compiled_custom.iter()) {
@@ -429,22 +493,28 @@ impl CodeInvariantChecker {
                 }
 
                 if rule.id == "INV-REL-ASYNC-BLOCKING" {
-                    if has_spawn_blocking {
-                        continue; // Blocking sleep inside spawn_blocking / run_in_executor is legitimate
+                    let local_spawn_blocking = spawn_blocking_line
+                        .map(|sb_idx| idx.saturating_sub(sb_idx) <= 12)
+                        .unwrap_or(false);
+                    if local_spawn_blocking {
+                        continue; // Blocking sleep genuinely inside nearby spawn_blocking / run_in_executor
                     }
                     if line.contains("std::thread::sleep") && !in_async_scope {
                         continue; // Legitimate synchronous sleep inside non-async function
                     }
-                    if line.contains("time.sleep") && (!in_async_scope || !content.contains("async def ")) {
+                    if line.contains("time.sleep") && (!in_async_scope || !stripped_code_all.contains("async def ")) {
                         continue; // Legitimate synchronous Python script sleep
                     }
                 }
 
-                if rule.id == "INV-SEC-EVAL-EXEC"
-                    && line.contains("dangerouslySetInnerHTML")
-                    && has_dompurify
-                {
-                    continue; // Sanitized via DOMPurify before rendering
+                if rule.id == "INV-SEC-EVAL-EXEC" && line.contains("dangerouslySetInnerHTML") {
+                    let dom_start = idx.saturating_sub(8);
+                    let local_dompurify = code_lines[dom_start..=idx]
+                        .iter()
+                        .any(|cl| cl.contains("DOMPurify.sanitize") || cl.contains("sanitizeHtml("));
+                    if local_dompurify {
+                        continue; // Sanitized via DOMPurify in preceding non-comment code
+                    }
                 }
 
                 if rule.id == "INV-SEC-RAW-SQL" {
@@ -470,7 +540,24 @@ impl CodeInvariantChecker {
                         || upper.contains("YOUR_API_KEY")
                         || upper.contains("REPLACE_ME")
                         || upper.contains("X-INTERNAL-");
-                    if is_placeholder_or_header && !trimmed.contains("AKIA") && !trimmed.contains("ghp_") && !trimmed.contains("sk-") && !trimmed.contains("eyJ") {
+                    if is_placeholder_or_header
+                        && !trimmed.contains("AKIA")
+                        && !trimmed.contains("ghp_")
+                        && !trimmed.contains("github_pat_")
+                        && !trimmed.contains("sk-")
+                        && !trimmed.contains("eyJ")
+                    {
+                        continue;
+                    }
+                }
+
+                if rule.id == "INV-SEC-PATH-TRAVERSAL"
+                    && (stripped_lower.contains("canonicalize(")
+                        || stripped_lower.contains("validate_safe_path(")
+                        || stripped_lower.contains("realpath("))
+                {
+                    // Skip path traversal false positive when canonicalization guard is present (still check pickle/yaml)
+                    if !trimmed.contains("pickle") && !trimmed.contains("marshal") && !trimmed.contains("shelve") && !trimmed.contains("yaml.load") {
                         continue;
                     }
                 }
@@ -479,10 +566,15 @@ impl CodeInvariantChecker {
                 if !matched
                     && rule.id == "INV-SEC-RAW-SQL"
                     && idx >= sql_window_skip_until
-                    && (trimmed.contains("format!(") || trimmed.contains("fmt.Sprintf("))
+                    && (trimmed.contains("format!(")
+                        || trimmed.contains("fmt.Sprintf(")
+                        || trimmed.contains(".execute(")
+                        || trimmed.contains(".query(")
+                        || trimmed.contains(".raw(")
+                        || trimmed.contains("text("))
                 {
-                    let end_idx = (idx + 2).min(lines.len().saturating_sub(1));
-                    let joined = lines[idx..=end_idx].join(" ");
+                    let end_idx = (idx + 2).min(code_lines.len().saturating_sub(1));
+                    let joined = code_lines[idx..=end_idx].join(" ");
                     if regex.is_match(&joined) {
                         matched = true;
                         sql_window_skip_until = end_idx + 1;
@@ -490,20 +582,45 @@ impl CodeInvariantChecker {
                 }
 
                 if !matched
+                    && rule.id == "INV-SEC-EVAL-EXEC"
+                    && (trimmed.contains("Command::new(")
+                        || trimmed.contains("exec.Command(")
+                        || trimmed.contains("subprocess.")
+                        || trimmed.contains("spawn("))
+                {
+                    let end_idx = (idx + 2).min(code_lines.len().saturating_sub(1));
+                    let joined = code_lines[idx..=end_idx].join(" ");
+                    if regex.is_match(&joined) {
+                        matched = true;
+                    }
+                }
+
+                if !matched
                     && rule.id == "INV-SEC-SSRF-UNCHECKED"
                     && has_untrusted_url_param
                     && !has_ssrf_allowlist
-                    && (trimmed.contains("requests.get(")
-                        || trimmed.contains("requests.post(")
-                        || trimmed.contains("fetch(")
-                        || trimmed.contains("http.Get(")
-                        || trimmed.contains("reqwest::get("))
                 {
-                    matched = true;
+                    let passes_literal_url = trimmed.contains("fetch(\"http")
+                        || trimmed.contains("fetch('http")
+                        || trimmed.contains("requests.get(\"http")
+                        || trimmed.contains("requests.get('http")
+                        || trimmed.contains("requests.post(\"http")
+                        || trimmed.contains("requests.post('http")
+                        || trimmed.contains("http.Get(\"http")
+                        || trimmed.contains("reqwest::get(\"http");
+                    if !passes_literal_url
+                        && (trimmed.contains("requests.get(")
+                            || trimmed.contains("requests.post(")
+                            || trimmed.contains("fetch(")
+                            || trimmed.contains("http.Get(")
+                            || trimmed.contains("reqwest::get("))
+                    {
+                        matched = true;
+                    }
                 }
 
                 if !matched && rule.id == "INV-ERR-SILENT-FAIL" {
-                    let next_trimmed = lines.get(idx + 1).map(|s| s.trim()).unwrap_or("");
+                    let next_trimmed = code_lines.get(idx + 1).map(|s| s.trim()).unwrap_or("");
                     if trimmed.starts_with("except")
                         && trimmed.ends_with(':')
                         && (next_trimmed == "pass" || next_trimmed == "...")
@@ -569,6 +686,109 @@ impl CodeInvariantChecker {
             execution_duration_ms: start.elapsed().as_secs_f64() * 1000.0,
         }
     }
+}
+
+/// Strips inline `/* ... */` blocks and trailing `//` / `--` / `#` comments while preserving string literals.
+fn strip_inline_comments(
+    line: &str,
+    is_rust_file: bool,
+    is_sql_file: bool,
+    is_hash_comment_lang: bool,
+) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0usize;
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut in_backtick = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_double {
+            let ch = line[i..].chars().next().unwrap();
+            if ch == '\\' && i + 1 < bytes.len() {
+                let next_ch = line[i + 1..].chars().next().unwrap();
+                out.push(ch);
+                out.push(next_ch);
+                i += 1 + next_ch.len_utf8();
+                continue;
+            }
+            if ch == '"' {
+                in_double = false;
+            }
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if in_single {
+            let ch = line[i..].chars().next().unwrap();
+            if ch == '\\' && i + 1 < bytes.len() {
+                let next_ch = line[i + 1..].chars().next().unwrap();
+                out.push(ch);
+                out.push(next_ch);
+                i += 1 + next_ch.len_utf8();
+                continue;
+            }
+            if ch == '\'' {
+                in_single = false;
+            }
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if in_backtick {
+            let ch = line[i..].chars().next().unwrap();
+            if ch == '\\' && i + 1 < bytes.len() {
+                let next_ch = line[i + 1..].chars().next().unwrap();
+                out.push(ch);
+                out.push(next_ch);
+                i += 1 + next_ch.len_utf8();
+                continue;
+            }
+            if ch == '`' {
+                in_backtick = false;
+            }
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        // Outside string literals: check for inline /* ... */ or line comments
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            if let Some(end_rel) = line[i + 2..].find("*/") {
+                out.push(' ');
+                i += 2 + end_rel + 2;
+                continue;
+            } else {
+                break;
+            }
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            break;
+        }
+        if is_sql_file && b == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
+            break;
+        }
+        if is_hash_comment_lang && b == b'#' {
+            break;
+        }
+
+        let ch = line[i..].chars().next().unwrap();
+        if ch == '"' {
+            in_double = true;
+        } else if ch == '`' {
+            in_backtick = true;
+        } else if ch == '\'' {
+            // In Rust, `'` starts a char literal only if closed within <=4 bytes; otherwise it's a lifetime (`'a`).
+            if !is_rust_file || line[i + 1..].chars().take(4).any(|c| c == '\'') {
+                in_single = true;
+            }
+        }
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    out
 }
 
 #[cfg(test)]

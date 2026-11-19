@@ -78,6 +78,7 @@ impl EolClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(6))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent("ChronoFact/0.1.0 (https://github.com/ModernOps888/chronofact)")
             .build()
             .unwrap_or_default();

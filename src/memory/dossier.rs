@@ -165,30 +165,45 @@ impl DossierCompiler {
         }
 
         // 4. Assemble Markdown Dossier (Header without dynamic timestamp for 100% KV cache prefix hits)
+        let escape_attr = |s: &str| -> String {
+            s.replace('&', "&amp;")
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        };
+        let defang_dossier = |s: &str| -> String {
+            static DOSSIER_CLOSE_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let re = DOSSIER_CLOSE_RE.get_or_init(|| {
+                regex::Regex::new(r"(?i)</?\s*chronofact_project_truth_dossier\b[^>]*>").unwrap()
+            });
+            re.replace_all(s, "[DEFANGED_DOSSIER_TAG]").into_owned()
+        };
+
+        let safe_proj = escape_attr(project_id);
         let mut md = format!(
             "<chronofact_project_truth_dossier project=\"{}\">\n\
             ### 📌 ChronoFact Persistent Project Memory (Cross-Session Truth)\n\n",
-            project_id
+            safe_proj
         );
 
         if !active_tech_stack.is_empty() {
             md.push_str("#### ⚙️ Active Tech Stack & Invariants\n");
             for item in &active_tech_stack {
-                md.push_str(&format!("* {}\n", item));
+                md.push_str(&format!("* {}\n", defang_dossier(item)));
             }
         }
 
         if !architectural_invariants.is_empty() {
             md.push_str("\n#### 🏛️ Architecture Rules & Contracts\n");
             for item in &architectural_invariants {
-                md.push_str(&format!("* {}\n", item));
+                md.push_str(&format!("* {}\n", defang_dossier(item)));
             }
         }
 
         if !recent_decisions.is_empty() {
             md.push_str("\n#### 📜 Recent Session Decisions (Past Chats)\n");
             for dec in &recent_decisions {
-                md.push_str(&format!("* {}\n", dec));
+                md.push_str(&format!("* {}\n", defang_dossier(dec)));
             }
         }
 

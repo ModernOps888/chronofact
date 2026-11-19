@@ -1,7 +1,15 @@
 use super::registry::ModelHorizon;
 use super::scanner::TemporalScanResult;
 use chrono::{Datelike, NaiveDate};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+
+fn serialize_f32_2dp<S>(val: &f32, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let rounded = ((*val as f64) * 100.0).round() / 100.0;
+    s.serialize_f64(rounded)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HorizonAnalysis {
@@ -13,6 +21,7 @@ pub struct HorizonAnalysis {
     pub training_freeze: NaiveDate,
     pub days_post_cutoff: i64,
     pub days_post_freeze: i64,
+    #[serde(serialize_with = "serialize_f32_2dp")]
     pub temporal_risk_score: f32,
     pub is_model_outdated_or_retired: bool,
     pub recommended_replacement: Option<String>,

@@ -158,7 +158,7 @@ pub fn list_tools() -> Value {
             },
             {
                 "name": "chronofact_verify_code_invariants",
-                "description": "Audits source code/diffs across Rust, TS/JS/React, Python, C/C++/CUDA, Go, SQL, and PowerShell against 12 security, memory-safety, and anti-hallucination invariants.",
+                "description": "Audits source code/diffs across Rust, TS/JS/React, Python, C/C++/CUDA, Go, SQL, and PowerShell against 13 security, memory-safety, and anti-hallucination invariants.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

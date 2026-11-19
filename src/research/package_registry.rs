@@ -117,6 +117,7 @@ impl PackageMetadata {
                         && matches!(parsed.host(), Some(url::Host::Domain(d)) if {
                             let dl = d.trim_end_matches('.').to_lowercase();
                             dl != "localhost"
+                                && !dl.ends_with(".localhost")
                                 && !dl.ends_with(".local")
                                 && !dl.ends_with(".internal")
                                 && dl.contains('.')
@@ -195,6 +196,7 @@ impl PackageRegistryClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(6))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent("ChronoFact/0.1.0 (https://github.com/ModernOps888/chronofact)")
             .build()
             .unwrap_or_default();

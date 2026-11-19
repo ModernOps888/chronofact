@@ -56,6 +56,46 @@ pub fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
 pub struct AttestationEngine;
 
 impl AttestationEngine {
+    /// Builds an unambiguous length-prefixed canonical payload covering every attestation field
+    /// including schema_version and timestamp so neither metadata tampering nor delimiter collisions
+    /// can forge signatures.
+    #[allow(clippy::too_many_arguments)]
+    fn canonical_payload(
+        schema_version: &str,
+        attestation_id: &str,
+        timestamp: &str,
+        project_id: &str,
+        target_name: &str,
+        target_sha256: &str,
+        temporal_anchor: &str,
+        verdict: &str,
+        rules_evaluated: usize,
+        violations_count: usize,
+        critical_violations: usize,
+        high_violations: usize,
+    ) -> String {
+        format!(
+            "CHRONOFACT-ATTESTATION:v2:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            schema_version.len(),
+            schema_version,
+            attestation_id,
+            timestamp.len(),
+            timestamp,
+            project_id.len(),
+            project_id,
+            target_name.len(),
+            target_name,
+            target_sha256,
+            temporal_anchor.len(),
+            temporal_anchor,
+            verdict,
+            rules_evaluated,
+            violations_count,
+            critical_violations,
+            high_violations
+        )
+    }
+
     /// Generates a signed invariant attestation token from an audit report.
     pub fn create_attestation(
         report: &CodeAuditReport,
@@ -68,6 +108,7 @@ impl AttestationEngine {
         hasher.update(target_content.as_bytes());
         let target_sha256 = format!("{:x}", hasher.finalize());
 
+        let schema_version = "1.0.0".to_string();
         let attestation_id = Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now().to_rfc3339();
 
@@ -77,18 +118,19 @@ impl AttestationEngine {
             AuditVerdict::Block => "BLOCK",
         };
 
-        let canonical_payload = format!(
-            "CHRONOFACT-ATTESTATION:v1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-            attestation_id,
+        let canonical_payload = Self::canonical_payload(
+            &schema_version,
+            &attestation_id,
+            &timestamp,
             project_id,
-            report.target,
-            target_sha256,
+            &report.target,
+            &target_sha256,
             temporal_anchor,
             verdict_str,
             report.total_rules_evaluated,
             report.violations_count,
             report.critical_count,
-            report.high_count
+            report.high_count,
         );
         // HMAC-SHA256 with an operator-supplied key. With no key the token is explicitly
         // unsigned rather than "signed" with a publicly known literal.
@@ -98,7 +140,7 @@ impl AttestationEngine {
         };
 
         InvariantAttestation {
-            schema_version: "1.0.0".to_string(),
+            schema_version,
             attestation_id,
             timestamp,
             project_id: project_id.to_string(),
@@ -123,18 +165,19 @@ impl AttestationEngine {
         if attestation.signature == UNSIGNED_MARKER {
             return false;
         }
-        let canonical_payload = format!(
-            "CHRONOFACT-ATTESTATION:v1:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-            attestation.attestation_id,
-            attestation.project_id,
-            attestation.target_name,
-            attestation.target_sha256,
-            attestation.temporal_anchor,
-            attestation.verdict,
+        let canonical_payload = Self::canonical_payload(
+            &attestation.schema_version,
+            &attestation.attestation_id,
+            &attestation.timestamp,
+            &attestation.project_id,
+            &attestation.target_name,
+            &attestation.target_sha256,
+            &attestation.temporal_anchor,
+            &attestation.verdict,
             attestation.rules_evaluated,
             attestation.violations_count,
             attestation.critical_violations,
-            attestation.high_violations
+            attestation.high_violations,
         );
         let expected = hmac_sha256_hex(key.as_bytes(), canonical_payload.as_bytes());
         // Constant-time comparison

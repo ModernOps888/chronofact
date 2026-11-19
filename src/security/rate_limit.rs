@@ -26,7 +26,10 @@ impl RateLimiter {
     }
 
     pub fn acquire(&self, amount: f64) -> bool {
-        let mut state = self.state.lock().unwrap();
+        if !amount.is_finite() || amount <= 0.0 {
+            return false;
+        }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_update).as_secs_f64();
         state.last_update = now;

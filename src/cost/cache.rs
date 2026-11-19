@@ -66,39 +66,45 @@ impl ToolResponseCache {
         hasher.update(arg_str.as_bytes());
 
         // Filesystem State Awareness:
-        // If the tool arguments contain a target file path (e.g. read_file, view_file),
-        // incorporate canonical_path, mtime (nanoseconds), and file_size into the hash:
-        // SHA-256(tool_name + canonical_path + mtime + file_size).
-        if let Some(val) = Self::extract_path(arguments) {
-            let canon_path = std::path::Path::new(&val)
-                .canonicalize()
-                .ok()
-                .and_then(|p| p.to_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| val.replace('\\', "/"));
+        // Only probe local disk metadata for upstream filesystem tools (never for pure compute
+        // `chronofact_*` tools where `file_path` is an audit label), and NEVER probe Windows UNC
+        // network paths (`\\...` / `//...`) or device namespaces (prevents SMB/NTLM hash exfil).
+        if !tool_name.starts_with("chronofact_") {
+            if let Some(val) = Self::extract_path(arguments) {
+                if crate::security::SecurityValidator::is_network_or_device_path(&val) {
+                    hasher.update(b":unc_or_device_blocked=1");
+                } else {
+                    let canon_path = std::path::Path::new(&val)
+                        .canonicalize()
+                        .ok()
+                        .and_then(|p| p.to_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| val.replace('\\', "/"));
 
-            if let Ok(meta) = std::fs::metadata(&val) {
-                let mtime = meta.modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                let len = meta.len();
-                hasher.update(format!(":canonical_path={}:mtime={}:file_size={}", canon_path, mtime, len).as_bytes());
+                    if let Ok(meta) = std::fs::metadata(&val) {
+                        let mtime = meta.modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0);
+                        let len = meta.len();
+                        hasher.update(format!(":canonical_path={}:mtime={}:file_size={}", canon_path, mtime, len).as_bytes());
 
-                // Sub-Second Mutation & Low-Granularity Filesystem Protection:
-                // In virtualized environments (WSL2, Docker VirtioFS, NFS, FAT32), mtime resolution
-                // often truncates to 1-second boundaries. Read and hash the initial 512-byte header/content prefix
-                // to detect rapid sub-second modifications even if mtime has not yet ticked.
-                if let Ok(mut f) = std::fs::File::open(&val) {
-                    use std::io::Read;
-                    let mut head_buf = [0u8; 512];
-                    if let Ok(n) = f.read(&mut head_buf) {
-                        hasher.update(b":head512=");
-                        hasher.update(&head_buf[..n]);
+                        // Sub-Second Mutation & Low-Granularity Filesystem Protection:
+                        // Only read regular files (`meta.is_file()`), never named pipes/devices.
+                        if meta.is_file() {
+                            if let Ok(mut f) = std::fs::File::open(&val) {
+                                use std::io::Read;
+                                let mut head_buf = [0u8; 512];
+                                if let Ok(n) = f.read(&mut head_buf) {
+                                    hasher.update(b":head512=");
+                                    hasher.update(&head_buf[..n]);
+                                }
+                            }
+                        }
+                    } else {
+                        hasher.update(format!(":canonical_path={}", canon_path).as_bytes());
                     }
                 }
-            } else {
-                hasher.update(format!(":canonical_path={}", canon_path).as_bytes());
             }
         }
 

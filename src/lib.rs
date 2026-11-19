@@ -38,6 +38,6 @@ pub use research::{
     ContentExtractor, PackageEcosystem, PackageMetadata, PackageRegistryClient, SearchEngine,
     SourceChunk,
 };
-pub use security::{ContentSanitizer, RateLimiter, SecurityError, SecurityValidator};
+pub use security::{redact_secrets, ContentSanitizer, RateLimiter, SecurityError, SecurityValidator};
 pub use temporal::{HorizonAnalysis, HorizonCalculator, ModelHorizon, ModelRegistry, TemporalScanner};
 

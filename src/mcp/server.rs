@@ -185,6 +185,7 @@ impl McpServer {
             }
         });
         let mut in_flight = tokio::task::JoinSet::new();
+        let concurrency_sem = Arc::new(tokio::sync::Semaphore::new(64));
 
         loop {
             buf.clear();
@@ -235,9 +236,13 @@ impl McpServer {
             };
 
             while in_flight.try_join_next().is_some() {}
+            let Ok(permit) = concurrency_sem.clone().acquire_owned().await else {
+                break;
+            };
             let server = self.clone();
             let tx = out_tx.clone();
             in_flight.spawn(async move {
+                let _permit = permit;
                 if let Some(r) = server.handle_request(req).await {
                     if let Ok(out) = serde_json::to_string(&r) {
                         let _ = tx.send(out);
@@ -348,8 +353,20 @@ impl McpServer {
                         | "chronofact_verify_code_invariants"
                         | "chronofact_cost_optimize"
                 );
+                let cache_args = if tool_name == "chronofact_temporal_check" {
+                    let mut obj = args.clone();
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert(
+                            "_utc_date".to_string(),
+                            json!(chrono::Utc::now().naive_utc().date().to_string()),
+                        );
+                    }
+                    obj
+                } else {
+                    args.clone()
+                };
                 if is_native_cacheable {
-                    if let Some(cached) = self.tool_cache.get(tool_name, &args) {
+                    if let Some(cached) = self.tool_cache.get(tool_name, &cache_args) {
                         let text = serde_json::to_string(&cached).unwrap_or_else(|_| cached.to_string());
                         return Some(JsonRpcResponse::success(
                             id,
@@ -365,7 +382,7 @@ impl McpServer {
                 match tool_result {
                     Ok(val) => {
                         if is_native_cacheable {
-                            self.tool_cache.put(tool_name, &args, val.clone());
+                            self.tool_cache.put(tool_name, &cache_args, val.clone());
                         } else if tool_name == "chronofact_memory_save" {
                             self.tool_cache.invalidate_server("default");
                         }
@@ -508,12 +525,35 @@ impl McpServer {
                 // Prioritizes explicit model_id, then active 2026 models mentioned in comparison/migration queries,
                 // before falling back to flagged outdated models so comparison queries are never hijacked.
                 let q_lower = query.to_lowercase();
+                let is_argon2_crypto = q_lower.contains("argon2");
+                let is_gemini_argon_context = !is_argon2_crypto
+                    && (q_lower.contains("gemini-4")
+                        || q_lower.contains("gemini 4")
+                        || q_lower.contains("gemini-4-argon")
+                        || q_lower.contains("gemini 4 argon")
+                        || (q_lower
+                            .split(|c: char| !c.is_alphanumeric())
+                            .any(|w| w == "argon")
+                            && (q_lower.contains("gemini")
+                                || q_lower.contains("google")
+                                || q_lower.contains("deepmind")
+                                || q_lower.contains("model")
+                                || q_lower.contains("cutoff")
+                                || q_lower.contains("freeze"))));
+                let is_openai_astra = q_lower.contains("gpt-6-astra")
+                    || q_lower.contains("gpt 6 astra")
+                    || q_lower.contains("gpt-6 astra")
+                    || q_lower.contains("astra-6")
+                    || q_lower.contains("astra 6")
+                    || q_lower.contains("astra6")
+                    || q_lower.contains("astr-6")
+                    || q_lower.contains("astr 6");
                 let effective_model_id = if !requested_model_id.is_empty()
                     && requested_model_id != "auto"
                     && requested_model_id != "default"
                 {
                     requested_model_id
-                } else if q_lower.contains("astra") || q_lower.contains("astr-6") || q_lower.contains("astr 6") {
+                } else if is_openai_astra {
                     "gpt-6-astra"
                 } else if q_lower.contains("sol-6")
                     || q_lower.contains("sol 6")
@@ -527,7 +567,7 @@ impl McpServer {
                     "claude-sonnet-5-5"
                 } else if q_lower.contains("grok 4") || q_lower.contains("grok-4") {
                     "grok-4-7"
-                } else if q_lower.contains("gemini-4") || q_lower.contains("gemini 4") || q_lower.contains("argon") {
+                } else if is_gemini_argon_context {
                     "gemini-4-argon"
                 } else if let Some(flagged) = scan.outdated_models_flagged.first() {
                     let f_lower = flagged.to_lowercase();
@@ -595,13 +635,14 @@ impl McpServer {
                     )
                 };
 
-                // Live recording for Antigravity / IDE session
+                // Live recording for Antigravity / IDE session (redact secrets before SQLite persistence)
+                let safe_query = crate::security::redact_secrets(query);
                 let drift_event = DriftEvent {
                     id: 0,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     project_id: "antigravity-ide".to_string(),
                     model_id: model.model_id.clone(),
-                    query: query.to_string(),
+                    query: safe_query,
                     days_post_freeze: analysis.days_post_freeze,
                     temporal_risk_score: analysis.temporal_risk_score,
                     outdated_topics_caught: outdated_topics,
@@ -611,11 +652,12 @@ impl McpServer {
                 let _ = self.memory.record_drift_event(&drift_event);
 
                 if compact && !analysis.is_model_outdated_or_retired && analysis.outdated_warnings.is_empty() {
+                    let clean_risk = ((analysis.temporal_risk_score as f64) * 100.0).round() / 100.0;
                     Ok(json!({
                         "calibration_block": analysis.calibration_block,
                         "model_id": analysis.model_id,
                         "model_name": analysis.model_name,
-                        "temporal_risk_score": analysis.temporal_risk_score,
+                        "temporal_risk_score": clean_risk,
                         "requires_grounding": analysis.requires_grounding,
                         "is_model_outdated_or_retired": false
                     }))
@@ -629,19 +671,20 @@ impl McpServer {
                     .or_else(|| args.get("prompt"))
                     .and_then(|v| v.as_str())
                     .ok_or("Missing query")?;
-                let max = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
+                let max = (args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(4) as usize).clamp(1, 20);
 
                 let sources = self.searcher.search(query, max).await?;
+                let safe_query = crate::security::redact_secrets(query);
 
                 let drift_event = DriftEvent {
                     id: 0,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     project_id: "antigravity-ide".to_string(),
                     model_id: "grounding-engine".to_string(),
-                    query: query.to_string(),
+                    query: safe_query,
                     days_post_freeze: 0,
                     temporal_risk_score: 0.75,
-                    outdated_topics_caught: format!("Real-time search: {}", query),
+                    outdated_topics_caught: format!("Real-time search: {}", crate::security::redact_secrets(query)),
                     intervention_type: "WEB_RESEARCH_GROUNDING".to_string(),
                     ground_truth_retrieved: sources.iter().map(|s| s.title.clone()).collect::<Vec<_>>().join(" | "),
                 };
@@ -811,12 +854,13 @@ impl McpServer {
                 };
                 let ledger_risk = report.hallucination_risk_index.unwrap_or(0.0);
 
+                let safe_response_text = crate::security::redact_secrets(response_text);
                 let drift_event = DriftEvent {
                     id: 0,
                     timestamp: now_ts.clone(),
                     project_id: "antigravity-ide".to_string(),
                     model_id: "claim-verifier".to_string(),
-                    query: response_text.to_string(),
+                    query: safe_response_text.clone(),
                     days_post_freeze: 0,
                     temporal_risk_score: ledger_risk,
                     outdated_topics_caught: format!(
@@ -840,7 +884,7 @@ impl McpServer {
                 };
                 let _ = self.memory.record_drift_event(&drift_event);
 
-                // Persist full untruncated EpistemicTrajectory and KTO post-training pairs
+                // Persist full untruncated EpistemicTrajectory and KTO post-training pairs (secrets redacted)
                 let verified_vec: Vec<_> = report
                     .claims
                     .iter()
@@ -862,8 +906,8 @@ impl McpServer {
                     timestamp: now_ts.clone(),
                     project_id: "antigravity-ide".to_string(),
                     model_id: "claim-verifier".to_string(),
-                    query: response_text.to_string(),
-                    draft_response: response_text.to_string(),
+                    query: safe_response_text.clone(),
+                    draft_response: safe_response_text.clone(),
                     verified_claims_json: serde_json::to_string(&verified_vec).unwrap_or_else(|_| "[]".to_string()),
                     contradicted_claims_json: serde_json::to_string(&contradicted_vec).unwrap_or_else(|_| "[]".to_string()),
                     unverified_claims_json: serde_json::to_string(&unverified_vec).unwrap_or_else(|_| "[]".to_string()),
@@ -879,14 +923,15 @@ impl McpServer {
                     .collect::<Vec<_>>()
                     .join("\n");
                 for vc in &report.claims {
+                    let safe_stmt = crate::security::redact_secrets(&vc.claim.statement);
                     match vc.status {
                         crate::grounding::VerificationStatus::Entailed => {
                             let _ = self.memory.record_post_training_pair(&PostTrainingPair {
                                 id: 0,
                                 timestamp: now_ts.clone(),
                                 project_id: "antigravity-ide".to_string(),
-                                prompt: response_text.to_string(),
-                                response: vc.claim.statement.clone(),
+                                prompt: safe_response_text.clone(),
+                                response: safe_stmt,
                                 label: "desirable".to_string(),
                                 kto_weight: 1.0,
                                 source_evidence: if evidence_summary.is_empty() {
@@ -902,8 +947,8 @@ impl McpServer {
                                 id: 0,
                                 timestamp: now_ts.clone(),
                                 project_id: "antigravity-ide".to_string(),
-                                prompt: response_text.to_string(),
-                                response: vc.claim.statement.clone(),
+                                prompt: safe_response_text.clone(),
+                                response: safe_stmt,
                                 label: "undesirable".to_string(),
                                 kto_weight: 2.25, // Kahneman-Tversky loss-aversion multiplier for hallucinations
                                 source_evidence: if evidence_summary.is_empty() {
@@ -1022,12 +1067,13 @@ impl McpServer {
                     Vec::new()
                 };
 
+                let safe_query = crate::security::redact_secrets(query);
                 let drift_event = DriftEvent {
                     id: 0,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     project_id: format!("ide:{}", project_id),
                     model_id: model.model_id.clone(),
-                    query: query.to_string(),
+                    query: safe_query,
                     days_post_freeze: horizon.days_post_freeze,
                     temporal_risk_score: horizon.temporal_risk_score,
                     outdated_topics_caught: if scan.detected_entities.is_empty() {
@@ -1070,7 +1116,7 @@ impl McpServer {
             }
             "chronofact_cost_optimize" => {
                 let query = args.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
-                let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
+                let top_k = (args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize).clamp(1, 50);
 
                 let mut candidate_tools = Self::native_tool_candidates(true);
 
@@ -1118,7 +1164,7 @@ impl McpServer {
             }
             "gateway_find_tools" => {
                 let query = args.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
-                let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                let top_k = (args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize).clamp(1, 50);
 
                 let mut all_candidates = Self::native_tool_candidates(false);
 
@@ -1183,15 +1229,19 @@ impl McpServer {
                 } else {
                     0.0
                 };
+                let safe_content = crate::security::redact_secrets(content);
+                let safe_violations = serde_json::to_string(&report.violations)
+                    .map(|s| crate::security::redact_secrets(&s))
+                    .unwrap_or_else(|_| "[]".to_string());
                 let _ = self.memory.record_epistemic_trajectory(&EpistemicTrajectory {
                     id: 0,
                     timestamp: now_ts.clone(),
                     project_id: "antigravity-ide".to_string(),
                     model_id: "code-invariant-gate".to_string(),
                     query: file_path.to_string(),
-                    draft_response: content.to_string(),
+                    draft_response: safe_content.clone(),
                     verified_claims_json: "[]".to_string(),
-                    contradicted_claims_json: serde_json::to_string(&report.violations).unwrap_or_else(|_| "[]".to_string()),
+                    contradicted_claims_json: safe_violations.clone(),
                     unverified_claims_json: "[]".to_string(),
                     source_evidence_json: "[]".to_string(),
                     hallucination_risk_index: hri,
@@ -1206,14 +1256,14 @@ impl McpServer {
                     timestamp: now_ts,
                     project_id: "antigravity-ide".to_string(),
                     prompt: format!("Audit code invariants for {}", file_path),
-                    response: content.to_string(),
+                    response: safe_content,
                     label: if report.violations_count > 0 {
                         "undesirable".to_string()
                     } else {
                         "desirable".to_string()
                     },
                     kto_weight: if report.violations_count > 0 { 2.25 } else { 1.0 },
-                    source_evidence: serde_json::to_string(&report.violations).unwrap_or_else(|_| "[]".to_string()),
+                    source_evidence: safe_violations,
                     reward_score: if report.violations_count > 0 { -1.0 } else { 1.0 },
                 });
 
@@ -1233,6 +1283,9 @@ impl McpServer {
                     .or_else(|| args.get("proposal"))
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'content' (or 'code'/'proposal')")?;
+                if content.trim().is_empty() {
+                    return Err("Cannot generate attestation for empty content (fail-closed policy)".to_string());
+                }
                 let default_today = chrono::Utc::now().naive_utc().date().to_string();
                 let temporal_anchor = args.get("temporal_anchor").and_then(|v| v.as_str()).unwrap_or(&default_today);
 
@@ -1261,7 +1314,7 @@ impl McpServer {
                     .or_else(|| args.get("query"))
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'query_or_category'")?;
-                let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
+                let top_k = (args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(4) as usize).clamp(1, 50);
 
                 let mut all_candidates = Self::native_tool_candidates(true);
 
@@ -1305,11 +1358,7 @@ impl McpServer {
         let args_str = args.to_string();
         let (has_threats, threats) = self.sanitizer.inspect_user_query(&args_str);
         if has_threats {
-            if passthrough {
-                tracing::warn!("Gateway passthrough mode: argument inspection warning: {:?}", threats);
-            } else {
-                return Err(format!("Security shield blocked dangerous tool call argument: {:?}", threats));
-            }
+            return Err(format!("Security shield blocked dangerous tool call argument: {:?}", threats));
         }
 
         // 2. Read-Only Gating for Cache Check: only cache tools that declare readOnlyHint: true

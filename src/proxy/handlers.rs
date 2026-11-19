@@ -89,12 +89,13 @@ pub async fn check_temporal(
         )
     };
 
+    let safe_query = crate::security::redact_secrets(&payload.query);
     let drift_event = crate::memory::DriftEvent {
         id: 0,
         timestamp: chrono::Utc::now().to_rfc3339(),
         project_id: "antigravity-ide".to_string(),
         model_id: model.model_id.clone(),
-        query: payload.query.clone(),
+        query: safe_query,
         days_post_freeze: analysis.days_post_freeze,
         temporal_risk_score: analysis.temporal_risk_score,
         outdated_topics_caught: outdated_topics,
@@ -114,7 +115,7 @@ pub async fn search_sources(
         return Err((StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded".to_string()));
     }
 
-    let max_results = payload.max_results.unwrap_or(4);
+    let max_results = payload.max_results.unwrap_or(4).clamp(1, 20);
     let results = state
         .search_engine
         .search(&payload.query, max_results)
@@ -251,12 +252,14 @@ pub async fn epistemic_chat(
     let footer = CitationMapper::format_markdown_footer(&citations);
     let final_answer = format!("{}{}", answer, footer);
 
-    // Record session turn in L2
+    // Record session turn in L2 (redacting secrets before SQLite persistence)
+    let safe_query = crate::security::redact_secrets(&payload.user_query);
+    let safe_answer = crate::security::redact_secrets(&final_answer);
     let _ = state.memory.record_event(
         "epistemic-chat",
         "CHAT_TURN",
-        &format!("Query: {}", payload.user_query),
-        Some(&final_answer),
+        &format!("Query: {}", safe_query),
+        Some(&safe_answer),
     );
 
     // Record Live Drift & Outdated Interception Audit Event
@@ -287,7 +290,7 @@ pub async fn epistemic_chat(
         timestamp: chrono::Utc::now().to_rfc3339(),
         project_id: payload.project_id.clone(),
         model_id: payload.model_id.clone(),
-        query: payload.user_query.clone(),
+        query: safe_query,
         days_post_freeze: temporal_analysis.days_post_freeze,
         temporal_risk_score: temporal_analysis.temporal_risk_score,
         outdated_topics_caught: outdated_topics,
@@ -357,7 +360,7 @@ pub async fn route_tools(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<RouteToolsRequest>,
 ) -> impl IntoResponse {
-    let top_k = payload.top_k.unwrap_or(4);
+    let top_k = payload.top_k.unwrap_or(4).clamp(1, 50);
     let tools = payload.tools.unwrap_or_else(|| {
         vec![
             crate::cost::ToolCandidate::new("chronofact_temporal_check", "Examines a query against a model's knowledge cutoff and estimated training freeze date", "chronofact", vec!["model_id".into(), "query".into()]),
@@ -431,11 +434,7 @@ pub async fn call_gateway_tool(
 
     let (threat, threats) = state.sanitizer.inspect_user_query(&args_val.to_string());
     if threat {
-        if is_passthrough {
-            tracing::warn!("Gateway proxy passthrough mode: argument inspection warning: {:?}", threats);
-        } else {
-            return Err((StatusCode::BAD_REQUEST, format!("Security shield rejected parameters: {:?}", threats)));
-        }
+        return Err((StatusCode::BAD_REQUEST, format!("Security shield rejected parameters: {:?}", threats)));
     }
 
     let (is_read_only, canonical_name, server_name) = {

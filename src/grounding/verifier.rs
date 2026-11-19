@@ -7,8 +7,21 @@
 
 use super::claim::AtomicClaim;
 use crate::research::SourceChunk;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashSet;
+
+fn serialize_opt_f32_2dp<S>(val: &Option<f32>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match val {
+        Some(v) => {
+            let rounded = ((*v as f64) * 100.0).round() / 100.0;
+            s.serialize_some(&rounded)
+        }
+        None => s.serialize_none(),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationStatus {
@@ -23,6 +36,7 @@ pub struct VerifiedClaim {
     pub status: VerificationStatus,
     /// `None` (serialized as `null`) when the claim was not checked against any grounding source
     /// or deterministic invariant, i.e. there is no evidence to base a confidence on.
+    #[serde(serialize_with = "serialize_opt_f32_2dp")]
     pub confidence_score: Option<f32>,
     pub matched_source_ids: Vec<String>,
     pub rationale: String,
@@ -49,6 +63,7 @@ pub struct VerificationReport {
     pub grounding_sources_available: bool,
     /// 0.0 (clean) to 1.0 (high hallucination risk), computed over checked claims only.
     /// `None` (serialized as `null`) when no claim was checked against sources or invariants.
+    #[serde(serialize_with = "serialize_opt_f32_2dp")]
     pub hallucination_risk_index: Option<f32>,
     pub claims: Vec<VerifiedClaim>,
     #[serde(default = "default_engine_name")]
@@ -287,13 +302,32 @@ impl FactVerifier {
                     || clause.contains("anthropic")
                     || clause.contains("meta")
                     || clause.contains("xai");
-                let explicitly_openai = clause.contains("openai")
+                let explicitly_wrong_attribution = [
+                    "developed by anthropic",
+                    "developed by google",
+                    "developed by deepmind",
+                    "developed by meta",
+                    "developed by xai",
+                    "made by anthropic",
+                    "made by google",
+                    "made by deepmind",
+                    "created by anthropic",
+                    "created by google",
+                    "released by anthropic",
+                    "released by google",
+                    "part of the claude",
+                    "part of the gemini",
+                    "part of the grok",
+                ]
+                .iter()
+                .any(|p| clause.contains(p));
+                let explicitly_openai = (clause.contains("openai") && !explicitly_wrong_attribution)
                     || clause.contains("not google")
                     || clause.contains("not anthropic")
                     || clause.contains("not deepmind")
                     || clause.contains("not meta")
                     || clause.contains("not xai");
-                if mentions_astra_or_sol && mentions_wrong_vendor && !explicitly_openai {
+                if mentions_astra_or_sol && (mentions_wrong_vendor || explicitly_wrong_attribution) && !explicitly_openai {
                     return true;
                 }
 
